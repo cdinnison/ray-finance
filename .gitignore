@@ -1,0 +1,14 @@
+node_modules/
+dist/
+data/
+!site/src/data/
+.env
+.env.local
+.env.*.local
+*.db
+*.tgz
+.DS_Store
+.vscode/
+.idea/
+coverage/
+.gstack/
