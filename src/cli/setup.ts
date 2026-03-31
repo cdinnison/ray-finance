@@ -76,7 +76,7 @@ export async function runSetup(): Promise<void> {
     }
 
     const { rayApiKey } = await inquirer.prompt([{
-      type: "password",
+      type: "input",
       name: "rayApiKey",
       message: "Ray API key:",
       validate: (v: string) => v.startsWith("ray_") || "Should start with ray_",
@@ -107,7 +107,7 @@ export async function runSetup(): Promise<void> {
         default: config.userName !== "User" ? config.userName : undefined,
       },
       {
-        type: "password",
+        type: "input",
         name: "anthropicKey",
         message: "Anthropic API key:",
         default: config.anthropicKey || undefined,
@@ -125,19 +125,19 @@ export async function runSetup(): Promise<void> {
         default: config.model,
       },
       {
-        type: "password",
+        type: "input",
         name: "plaidClientId",
         message: "Plaid production client ID (enter to skip):",
         default: config.plaidClientId || undefined,
       },
       {
-        type: "password",
+        type: "input",
         name: "plaidSecret",
         message: "Plaid production secret (enter to skip):",
         default: config.plaidSecret || undefined,
       },
       {
-        type: "password",
+        type: "input",
         name: "dbEncryptionKey",
         message: "Database encryption key (enter to skip):",
         default: config.dbEncryptionKey || undefined,
@@ -174,21 +174,33 @@ export async function runSetup(): Promise<void> {
   createContextTemplate(config.userName);
 
   console.log(`\n${chalk.green("✓")} Config saved`);
+  console.log(chalk.green(`\n  Welcome to Ray, ${config.userName}! You're all set.\n`));
 
-  // Link first account immediately — this is the critical path
+  // Ask before linking — don't just open the browser
   if (canLink) {
-    console.log();
-    const { runLink } = await import("./commands.js");
-    await runLink();
+    const { linkNow } = await inquirer.prompt([{
+      type: "confirm",
+      name: "linkNow",
+      message: "Would you like to link your first bank account now?",
+      default: true,
+    }]);
 
-    // Auto-schedule daily sync at 6am after first successful link
-    if (!config.syncSchedule) {
-      saveConfig({ syncSchedule: "06:00" });
-      const { installSyncSchedule } = await import("./scheduler.js");
-      installSyncSchedule("06:00");
-      console.log(`${chalk.green("✓")} Daily sync scheduled at 6:00 AM`);
+    if (linkNow) {
+      const { runLink } = await import("./commands.js");
+      await runLink();
+
+      // Auto-schedule daily sync at 6am after first successful link
+      if (!config.syncSchedule) {
+        saveConfig({ syncSchedule: "06:00" });
+        const { installSyncSchedule } = await import("./scheduler.js");
+        installSyncSchedule("06:00");
+        console.log(`${chalk.green("✓")} Daily sync scheduled at 6:00 AM`);
+      }
     }
   }
 
-  console.log(`\n${chalk.green("✓")} Setup complete! Run ${chalk.bold("ray")} to start chatting.\n`);
+  // Transition directly to chat instead of exiting
+  console.log();
+  const { startChat } = await import("./chat.js");
+  await startChat();
 }

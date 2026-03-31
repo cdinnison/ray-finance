@@ -37,7 +37,17 @@ export async function runLink(): Promise<void> {
   const spinner = ora("Waiting for bank connection...").start();
   await waitForComplete();
   stop();
-  spinner.succeed("Bank account linked successfully!");
+  spinner.succeed("Bank account linked!");
+
+  // Ensure data is synced before continuing
+  const syncSpinner = ora("Syncing your accounts...").start();
+  try {
+    const db = getDb();
+    await runDailySync(db);
+    syncSpinner.succeed("Accounts synced — your data is ready.");
+  } catch (err: any) {
+    syncSpinner.warn("Initial sync still processing — data will appear shortly.");
+  }
 }
 
 export function showStatus(): void {

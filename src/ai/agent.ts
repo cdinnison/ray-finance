@@ -108,11 +108,16 @@ export async function handleMessage(
 
     return responseText || "I looked into that but couldn't formulate a response. Could you try rephrasing?";
   } catch (error: any) {
-    // Log full error internally but don't expose details to user
+    if (error.status === 403 && useManaged()) {
+      return "Your Ray API key was rejected. Please check that your subscription is active, or run `ray setup` to re-enter your key.";
+    }
+    if (error.status === 401) {
+      return "API authentication failed. Please check your API key with `ray setup`.";
+    }
     const safeMessage = error.status
       ? `API error (${error.status})`
       : "internal error";
-    console.error("AI agent error:", safeMessage);
+    console.error("Agent error:", safeMessage);
     return "Sorry, I had trouble processing that. Could you try again?";
   }
 }

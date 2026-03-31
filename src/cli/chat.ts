@@ -12,13 +12,13 @@ function rawReadLine(prompt: string, belowLines: string[]): Promise<string> {
     let buf = "";
     const out = process.stdout;
 
-    // Render: prompt on current line, then content below, then restore cursor
+    // Render: prompt on current line, then content below, then move cursor back up
     out.write(prompt);
     if (belowLines.length > 0) {
-      // Save cursor, render below, restore
-      out.write("\x1b[s");
       out.write("\n" + belowLines.join("\n"));
-      out.write("\x1b[u");
+      // Move cursor back up to the prompt line and to end of prompt
+      out.write(`\x1b[${belowLines.length}A`);
+      out.write(`\r${prompt}`);
     }
 
     process.stdin.setRawMode!(true);
@@ -38,6 +38,8 @@ function rawReadLine(prompt: string, belowLines: string[]): Promise<string> {
         // Ctrl+C / Ctrl+D
         if (code === 3 || code === 4) {
           cleanup();
+          // Move past below lines before writing newline
+          out.write(`\x1b[${belowLines.length}B`);
           out.write("\n");
           resolve("\x03");
           return;
@@ -47,7 +49,7 @@ function rawReadLine(prompt: string, belowLines: string[]): Promise<string> {
         if (code === 13) {
           cleanup();
           // Move past the below-content lines, then newline
-          for (let j = 0; j < belowLines.length; j++) out.write("\x1b[1B");
+          out.write(`\x1b[${belowLines.length}B`);
           out.write("\n");
           resolve(buf);
           return;
