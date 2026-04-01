@@ -90,7 +90,8 @@ export function Footer() {
 
         <div className="mt-12 border-t border-sand-200 pt-6">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <Image src="/ray-logo-dark.png" alt="Ray" width={36} height={18} className="opacity-40" style={{ width: 'auto', height: 18 }} />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/ray-logo-dark.png" alt="Ray" width={37} height={18} className="opacity-40" />
             <p className="text-sm text-stone-400">
               Open source under MIT.
             </p>

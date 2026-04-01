@@ -1,4 +1,5 @@
 import { CopyCommand } from "./copy-command";
+import { RotatingPrompt } from "./rotating-prompt";
 import { PIIScramble } from "./pii-scramble";
 import { Reveal } from "./reveal";
 import { Nav } from "@/components/nav";
@@ -46,14 +47,13 @@ export default function Home() {
       <Nav />
       <Hero />
       <Terminal />
-      <TrustBlock />
       <Reveal><Story /></Reveal>
       <HowItWorks />
       <Reveal><Privacy /></Reveal>
+      <Reveal><Context /></Reveal>
       <Reveal><Features /></Reveal>
       <Reveal><Pricing /></Reveal>
       <CTA />
-      <BuiltBy />
     </main>
   );
 }
@@ -64,25 +64,27 @@ function Hero() {
   return (
     <section className="relative overflow-hidden pt-32 pb-12">
       <div className="mx-auto max-w-5xl px-6 text-center">
-        <h1 className="animate-fade-up text-4xl leading-[1.1] font-extrabold tracking-tight text-stone-950 sm:text-5xl lg:text-7xl">
-          An AI financial advisor that runs on your&nbsp;machine
+        <h1 className="animate-fade-up text-5xl leading-[1.1] font-black tracking-tight text-stone-950 sm:text-7xl lg:text-8xl">
+          Talk to your&nbsp;money
         </h1>
         <p className="animate-fade-up-delay-1 mx-auto mt-8 max-w-2xl text-lg leading-relaxed text-stone-500 sm:text-xl">
-          Ask anything about your money. Get actually helpful answers
-          from your real data. Open&nbsp;source and fully&nbsp;local.
+          Ray is an AI financial advisor that connects to your bank, understands your full picture, and gives real advice&mdash;all local on your machine.
         </p>
-        <div className="animate-fade-up-delay-2 mt-10 flex flex-col items-center gap-5 sm:flex-row sm:justify-center">
+        <div className="animate-fade-up-delay-2 mt-10 flex flex-col items-center gap-3">
           <CopyCommand
             command="npm install -g ray-finance"
-            className="rounded-full bg-stone-900 px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-stone-900/20 transition-colors hover:bg-stone-800 [&>span:first-child]:text-stone-500"
+            className="rounded-lg bg-stone-900 px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-stone-900/20 transition-colors hover:bg-stone-800 [&>span:first-child]:text-stone-500"
           />
-          <a
-            href="https://github.com/cdinnison/ray-finance"
-            className="inline-flex items-center gap-2.5 rounded-full border border-sand-200 bg-white px-5 py-3 text-sm font-medium text-stone-700 shadow-sm transition-colors hover:border-stone-400"
-          >
-            <GitHubIcon />
-            View on GitHub
-          </a>
+        </div>
+        <div className="animate-fade-up-delay-2 mt-10 flex h-5 flex-wrap items-center justify-center gap-x-8 gap-y-3 text-sm text-stone-400">
+          <span className="flex items-center gap-1.5">
+            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" /></svg>
+            Your data stays local
+          </span>
+          <span>AES-256 encrypted</span>
+          <span>MIT licensed</span>
+          <span>5 min setup</span>
+          <GitHubStars />
         </div>
       </div>
     </section>
@@ -92,7 +94,7 @@ function Hero() {
 /* ─── Terminal Demo ─── */
 function Terminal() {
   return (
-    <section className="px-6 py-16">
+    <section className="px-6 -mt-5 py-16">
       <div className="mx-auto max-w-3xl">
         <div className="overflow-hidden rounded-2xl border border-sand-200 bg-stone-950 shadow-2xl shadow-stone-900/10">
           {/* Title bar */}
@@ -106,30 +108,13 @@ function Terminal() {
           </div>
           {/* Content */}
           <div className="overflow-x-auto p-5 font-mono text-[11px] leading-[1.7] sm:p-8 sm:text-[13px]">
-            {/* ── Briefing (shown on launch, before user types anything) ── */}
-            <p className="text-stone-600">Friday, Mar 28</p>
+            <p className="text-stone-500">tuesday, apr 1</p>
             <Blank />
             <p className="text-stone-300">
-              <D>net worth</D>{"  "}<W>$45,230</W>{" "}<G>+$120</G>
+              <D>net worth</D>{"  "}<W>$45,230</W>{" "}<G>+$4,244</G>
             </p>
-            <Blank />
-            <p className="text-stone-300">
-              <D>spending</D>{"   "}<W>$2,340 this month</W>{" "}<D>&middot;</D>{" "}<G>$340 less</G>{" "}<D>vs last month</D>
-            </p>
-            <p className="text-stone-300">
-              {"           "}<D>Dining</D>{" "}<G>-$114</G>{"  "}<D>&middot;</D>{"  "}<D>Shopping</D>{" "}<G>-$142</G>{"  "}<D>&middot;</D>{"  "}<D>Groceries</D>{" "}<G>-$73</G>
-            </p>
-            <Blank />
-            <p className="text-stone-300 flex items-center gap-2">
-              {"           "}<CSSBar pct={92} color="amber" />{" "}<Y>Dining 92%</Y>
-            </p>
-            <Blank />
-            <p className="text-stone-300 flex items-center gap-2">
-              {"           "}<CSSBar pct={46} color="lime" />{" "}<W>Emergency fund</W>{" "}<D>$18,200/$40,000</D>
-            </p>
-            <Blank />
-            <p className="text-stone-300">
-              <D>upcoming</D>{"   "}<D>Netflix $16 in 3d</D>{"  "}<D>&middot;</D>{"  "}<D>Comcast $142 in 6d</D>
+            <p className="text-stone-500">
+              {"  "}checking $4,521{"  "}<D>&middot;</D>{"  "}savings $18,200{"  "}<D>&middot;</D>{"  "}brokerage $23,996{"  "}<D>&middot;</D>{"  "}credit card <R>-$1,487</R>
             </p>
             <Blank />
             <p className="text-stone-300">
@@ -138,30 +123,11 @@ function Terminal() {
             <Blank />
             <div className="border-t border-stone-800 my-3" />
             {/* ── Conversation ── */}
-            <p className="text-stone-300">
-              <span className="text-stone-600">{"❯ "}</span>
-              if I quit my job to freelance, how long can I survive?
-            </p>
-            <Blank />
-            <p className="text-stone-300">
-              Based on your last 3 months: you burn <W>$4,820/mo</W> after
-            </p>
-            <p className="text-stone-300">
-              fixed costs. With <G>$18,200</G> in savings, that&apos;s
-            </p>
-            <p className="text-stone-300">
-              <W>3.8 months</W> of runway at current spend.
-            </p>
-            <Blank />
-            <p className="text-stone-300">
-              Cut dining and shopping to last-month levels and
-            </p>
-            <p className="text-stone-300">
-              you stretch to <G>5.1 months</G>. Land one $8k contract
-            </p>
-            <p className="text-stone-300">
-              in that window and you never dip below $10k.
-            </p>
+            <RotatingPrompt />
+          </div>
+          {/* Status bar */}
+          <div className="border-t border-stone-800 px-5 py-2.5 font-mono text-[10px] text-stone-600 sm:px-8 sm:text-[11px]">
+            ray{"  "}<D>&middot;</D>{"  "}synced 1h ago{"  "}<D>&middot;</D>{"  "}try: compare this month to last month{"  "}<D>&middot;</D>{"  "}ctrl+c to exit
           </div>
         </div>
       </div>
@@ -169,33 +135,6 @@ function Terminal() {
   );
 }
 
-/* ─── Trust Block ─── */
-function TrustBlock() {
-  return (
-    <section className="py-16">
-      <div className="mx-auto grid max-w-3xl grid-cols-2 gap-y-6 px-6 sm:flex sm:flex-wrap sm:items-center sm:justify-center sm:gap-x-10 sm:gap-y-4">
-        <Metric value="Open Source" label="MIT License" />
-        <span className="hidden text-sand-200 sm:inline">|</span>
-        <Metric value="AES-256" label="Encrypted database" />
-        <span className="hidden text-sand-200 sm:inline">|</span>
-        <Metric value="Zero" label="Cloud storage" />
-        <span className="hidden text-sand-200 sm:inline">|</span>
-        <Metric value="5 min" label="Setup to first answer" />
-      </div>
-    </section>
-  );
-}
-
-function Metric({ value, label }: { value: string; label: string }) {
-  return (
-    <div className="text-center">
-      <p className="text-lg font-bold tracking-tight text-stone-900">
-        {value}
-      </p>
-      <p className="text-xs text-stone-400">{label}</p>
-    </div>
-  );
-}
 
 /* ─── Story ─── */
 function Story() {
@@ -212,7 +151,8 @@ function Story() {
             title="Dashboards show you what happened."
             body="Mint, Copilot, Monarch — they sort your transactions into
               pie charts and send you notifications. They're good at showing
-              you what you spent. They never tell you what to do about it."
+              you what you spent. They never tell you what to do about it.
+              And when your subscription expires, so does your data."
           />
 
           <StoryBlock
@@ -220,7 +160,8 @@ function Story() {
             title="Powerful when you keep them updated."
             body="You built the perfect spreadsheet once. Formulas, projections,
               a debt payoff timeline. But it only works when you do — and
-              manual data entry doesn't survive a busy month."
+              manual data entry doesn't survive a busy month.
+              You haven't opened it since February."
           />
 
           <div className="pl-8">
@@ -228,7 +169,7 @@ function Story() {
               Then there&rsquo;s Ray
             </p>
             <h3 className="mt-3 text-2xl font-bold tracking-tight text-stone-950">
-              A financial advisor that actually knows your numbers.
+              The advisor you&rsquo;d hire if they weren&rsquo;t $200/hour.
             </h3>
             <p className="mt-4 text-lg leading-relaxed text-stone-500">
               Ray connects directly to your bank accounts. It sees every
@@ -269,101 +210,112 @@ function StoryBlock({
 
 /* ─── How It Works ─── */
 function HowItWorks() {
+  const steps = [
+    {
+      num: "01",
+      title: "Install in seconds",
+      description:
+        "One npm command. No accounts, no sign-ups, no app store.",
+      code: "npm install -g ray-finance",
+    },
+    {
+      num: "02",
+      title: "Connect your bank",
+      description:
+        "Securely link your accounts through Plaid. Bank-level encryption.",
+      code: "ray link",
+    },
+    {
+      num: "03",
+      title: "Ask anything",
+      description:
+        "Get instant, AI-powered answers about your spending, savings goals, subscriptions, and financial health.",
+      code: "Am I on track to save $10k?",
+    },
+  ];
+
   return (
-    <section id="how-it-works" className="bg-stone-950 py-24 sm:py-32">
+    <section id="how-it-works" className="py-24 sm:py-32">
       <div className="mx-auto max-w-5xl px-6">
-        <p className="font-mono text-sm tracking-wide text-stone-500 uppercase">
+        <p className="font-mono text-xs tracking-widest text-stone-400 uppercase">
           How it works
         </p>
-        <h2 className="mt-4 text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
-          Install, connect your bank, get helpful answers.
-        </h2>
 
-        <div className="mt-16 grid gap-12 sm:grid-cols-2">
-          {/* Quick Setup */}
-          <div className="rounded-2xl border border-stone-800 bg-stone-900/50 p-8">
-            <div className="mb-8 flex items-center gap-3">
-              <span className="rounded-full bg-white/10 px-3 py-1 font-mono text-xs font-medium text-white">
-                most popular
-              </span>
-              <h3 className="text-lg font-bold text-white">Quick Setup</h3>
+        <div className="mt-12 grid gap-px overflow-hidden rounded-2xl border border-sand-200 bg-sand-200 sm:grid-cols-3">
+          {steps.map((step) => (
+            <div key={step.num} className="flex flex-col justify-between bg-white p-8">
+              <div>
+                <span className="text-5xl font-extrabold text-stone-200">
+                  {step.num}
+                </span>
+                <h3 className="mt-4 text-lg font-bold text-stone-950">
+                  {step.title}
+                </h3>
+                <p className="mt-3 text-sm leading-relaxed text-stone-500">
+                  {step.description}
+                </p>
+              </div>
+              <div className="mt-6 inline-flex items-center gap-2 self-start rounded-lg bg-stone-900 px-4 py-2.5">
+                <span className="text-stone-500">$</span>
+                <code className="font-mono text-xs text-stone-200">
+                  {step.code}
+                </code>
+              </div>
             </div>
-            <div className="space-y-8">
-              <Step
-                num="01"
-                title="Install"
-                code="npm install -g ray-finance"
-                description="One command. No dependencies to manage."
-              />
-              <Step
-                num="02"
-                title="Subscribe in the CLI"
-                code="ray setup"
-                description="Setup opens Stripe checkout in your browser. Paste the key back into the terminal."
-              />
-              <Step
-                num="03"
-                title="Connect & chat"
-                code="ray link → ray"
-                description="Link your accounts, then start asking questions. Ray handles the rest."
-              />
-            </div>
-          </div>
-
-          {/* Self-Hosted */}
-          <div className="rounded-2xl border border-stone-800/50 p-8">
-            <div className="mb-8">
-              <h3 className="text-lg font-bold text-white">Self-Hosted</h3>
-            </div>
-            <div className="space-y-8">
-              <Step
-                num="01"
-                title="Get your API keys"
-                code="anthropic.com + plaid.com"
-                description="Bring your own Anthropic API key and Plaid production credentials."
-              />
-              <Step
-                num="02"
-                title="Install & configure"
-                code="npm install -g ray-finance"
-                description="Enter each key during setup. Full control over which models and environments you use."
-              />
-              <Step
-                num="03"
-                title="Connect & chat"
-                code="ray link → ray"
-                description="Same experience, your own infrastructure. No third-party proxy."
-              />
-            </div>
-          </div>
+          ))}
         </div>
       </div>
     </section>
   );
 }
 
-function Step({
-  num,
-  title,
-  code,
-  description,
-}: {
-  num: string;
-  title: string;
-  code: string;
-  description: string;
-}) {
+/* ─── Context ─── */
+function Context() {
+  const items = [
+    { label: "Family situation", example: "Married, two kids, one income" },
+    { label: "Career stage", example: "Just started a new job at $95k" },
+    { label: "Financial goals", example: "Pay off student loans by 2027" },
+    { label: "Risk tolerance", example: "Conservative — no crypto" },
+    { label: "Life events", example: "Baby due in March, buying a house" },
+    { label: "Past decisions", example: "We cut DoorDash last month" },
+  ];
+
   return (
-    <div>
-      <span className="font-pixel text-sm text-stone-600">{num}</span>
-      <h3 className="mt-3 text-base font-bold text-white">{title}</h3>
-      <code className="mt-3 block whitespace-pre rounded-lg bg-stone-900 px-4 py-3 font-mono text-sm text-stone-300">
-        {code}
-      </code>
-      <p className="mt-3 text-sm leading-relaxed text-stone-400">
-        {description}
-      </p>
-    </div>
+    <section className="py-24 sm:py-32">
+      <div className="mx-auto max-w-5xl px-6">
+        <div className="grid gap-12 lg:grid-cols-2 lg:gap-20">
+          <div>
+            <p className="font-mono text-xs tracking-widest text-stone-400 uppercase">
+              What makes Ray different
+            </p>
+            <h2 className="mt-4 text-3xl font-extrabold tracking-tight text-stone-950 sm:text-4xl">
+              It knows your whole situation, not just your transactions.
+            </h2>
+            <p className="mt-4 text-lg leading-relaxed text-stone-500">
+              Ray builds a profile of your life over time — your goals, your
+              family, your career, your priorities. Every conversation makes it
+              smarter. The advice you get on day 30 is nothing like day one.
+            </p>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            {items.map((item) => (
+              <div
+                key={item.label}
+                className="rounded-xl border border-sand-200 bg-white p-5"
+              >
+                <h3 className="text-sm font-semibold text-stone-950">
+                  {item.label}
+                </h3>
+                <p className="mt-1 text-sm text-stone-400">
+                  {item.example}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -453,7 +405,7 @@ function Features() {
           What Ray can do
         </p>
         <h2 className="mt-4 text-3xl font-extrabold tracking-tight text-stone-950 sm:text-4xl">
-          Ask a question. Get an answer from your actual numbers.
+          Not a dashboard. Not a chatbot. A financial brain that actually knows your situation.
         </h2>
         <p className="mt-4 max-w-2xl text-lg text-stone-500">
           Ray has 30+ tools that query your real financial data. It looks
@@ -461,18 +413,6 @@ function Features() {
         </p>
 
         <div className="mt-16 grid gap-x-12 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
-          <Feature
-            question={`"Where is all my money going?"`}
-            description="Category breakdowns, period comparisons, and trend detection. Ray finds the patterns you miss in your own spending."
-          />
-          <Feature
-            question={`"How much am I spending on food delivery month over month?"`}
-            description="Ray breaks down any category across any time range. Spot trends you'd never catch scrolling through transactions."
-          />
-          <Feature
-            question={`"Can you audit to make sure my tenants have paid for the past 12 months?"`}
-            description="Ray searches your real transaction history, flags gaps, and gives you a straight answer. Landlord, freelancer, whatever — if the data is in your bank, Ray can check it."
-          />
           <Feature
             question={`"Can I afford to take this trip?"`}
             description="Ray projects your balance forward based on actual income and spending patterns. See the impact before you commit."
@@ -487,6 +427,18 @@ function Features() {
             question={`"What did we decide last time?"`}
             description="Ray remembers your goals, preferences, life events, and past decisions. Every conversation builds on the last one."
             highlight
+          />
+          <Feature
+            question={`"Where is all my money going?"`}
+            description="Category breakdowns, period comparisons, and trend detection. Ray finds the patterns you miss in your own spending."
+          />
+          <Feature
+            question={`"How much am I spending on food delivery month over month?"`}
+            description="Ray breaks down any category across any time range. Spot trends you'd never catch scrolling through transactions."
+          />
+          <Feature
+            question={`"Can you audit to make sure my tenants have paid for the past 12 months?"`}
+            description="Ray searches your real transaction history, flags gaps, and gives you a straight answer. Landlord, freelancer, whatever — if the data is in your bank, Ray can check it."
           />
         </div>
       </div>
@@ -530,6 +482,9 @@ function Pricing() {
           <h2 className="mt-4 text-3xl font-extrabold tracking-tight text-stone-950 sm:text-4xl">
             Free forever. Or skip the setup.
           </h2>
+          <p className="mx-auto mt-4 max-w-lg text-lg text-stone-500">
+            A human financial advisor costs $200/hr. Ray costs $10/mo&nbsp;&mdash; or nothing at all.
+          </p>
         </div>
 
         <div className="mx-auto mt-16 grid max-w-4xl gap-8 sm:grid-cols-2">
@@ -555,11 +510,15 @@ function Pricing() {
               <PricingItem>Full model selection</PricingItem>
               <PricingItem>All features included</PricingItem>
             </ul>
+            <CopyCommand
+              command="npm install -g ray-finance"
+              className="mt-8 block rounded-lg bg-stone-900 px-4 py-3 text-center text-sm text-white transition-colors hover:bg-stone-800 [&>span:first-child]:text-stone-500"
+            />
             <a
               href="https://github.com/cdinnison/ray-finance"
-              className="mt-8 block rounded-full bg-stone-900 py-3 text-center text-sm font-semibold text-white transition-colors hover:bg-stone-800"
+              className="mt-3 block text-center text-xs text-stone-400 underline decoration-stone-300 underline-offset-4 transition-colors hover:text-stone-600"
             >
-              View on GitHub
+              View source on GitHub
             </a>
           </div>
 
@@ -588,10 +547,11 @@ function Pricing() {
               <PricingItem>Ready in 5 minutes</PricingItem>
               <PricingItem>Same privacy guarantees</PricingItem>
               <PricingItem>All features included</PricingItem>
+              <PricingItem>Cancel anytime</PricingItem>
             </ul>
             <CopyCommand
               command="npm install -g ray-finance"
-              className="mt-8 block rounded-full bg-stone-50 px-4 py-3 text-center text-sm text-stone-600 transition-colors hover:bg-stone-100"
+              className="mt-8 block rounded-lg bg-stone-900 px-4 py-3 text-center text-sm text-white shadow-lg shadow-stone-900/20 transition-colors hover:bg-stone-800 [&>span:first-child]:text-stone-500"
             />
           </div>
         </div>
@@ -637,7 +597,7 @@ function CTA() {
         <div className="mt-10 flex flex-col items-center gap-6">
           <CopyCommand
             command="npm install -g ray-finance"
-            className="rounded-full border border-stone-800 bg-stone-900 px-6 py-3.5 text-sm text-white [&>span:first-child]:text-stone-500"
+            className="rounded-lg border border-stone-800 bg-stone-900 px-6 py-3.5 text-sm text-white [&>span:first-child]:text-stone-500"
           />
           <div className="flex items-center gap-6">
             <a
@@ -655,36 +615,28 @@ function CTA() {
             </a>
           </div>
         </div>
-      </div>
-    </section>
-  );
-}
 
-/* ─── Built By ─── */
-function BuiltBy() {
-  return (
-    <section className="py-24 sm:py-32">
-      <div className="mx-auto max-w-2xl px-6 text-center">
-        <p className="font-mono text-sm tracking-wide text-stone-400 uppercase">
-          Why I built this
-        </p>
-        <p className="mt-6 text-lg leading-relaxed text-stone-500">
-          I tried every finance app, built every spreadsheet, and talked to
-          a financial advisor who charged $200/hr to tell me things I already
-          knew. Nothing actually helped me make better decisions with my own
-          money. So I built the thing I wanted&nbsp;&mdash; an advisor that
-          knows my real numbers, runs locally, and is honest enough to
-          open&#8209;source.
-        </p>
-        <p className="mt-6 text-sm text-stone-400">
-          &mdash;{" "}
-          <a
-            href="https://github.com/cdinnison"
-            className="underline decoration-stone-300 underline-offset-4 transition-colors hover:text-stone-600"
-          >
-            Clark Dinnison
-          </a>
-        </p>
+        {/* Founder story */}
+        <div className="mx-auto mt-20 max-w-xl border-t border-stone-800 pt-12">
+          <p className="text-lg leading-relaxed text-stone-400 italic">
+            &ldquo;I tried every finance app, built every spreadsheet, and talked to
+            a financial advisor who charged $200/hr to tell me things I already
+            knew. Nothing actually helped me make better decisions with my own
+            money. So I built the thing I wanted&nbsp;&mdash; an advisor that
+            knows my real numbers, runs locally, and is honest enough to
+            open&#8209;source.&rdquo;
+          </p>
+          <p className="mt-6 text-sm text-stone-500">
+            &mdash;{" "}
+            <a
+              href="https://github.com/cdinnison"
+              className="underline decoration-stone-700 underline-offset-4 transition-colors hover:text-stone-300"
+            >
+              Clark Dinnison
+            </a>
+            , creator of Ray
+          </p>
+        </div>
       </div>
     </section>
   );
