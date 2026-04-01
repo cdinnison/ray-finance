@@ -1,7 +1,20 @@
 import { plaidClient } from "./client.js";
 import type BetterSqlite3 from "libsql";
 type Database = BetterSqlite3.Database;
-import type { RemovedTransaction, Transaction } from "plaid";
+import type { RemovedTransaction, Transaction, TransactionStream } from "plaid";
+
+/** Check if a Plaid API error is "product not supported/enabled" — safe to ignore */
+export function isProductNotSupported(err: unknown): boolean {
+  const data = (err as any)?.response?.data;
+  if (!data?.error_code) return false;
+  return [
+    "PRODUCTS_NOT_SUPPORTED",
+    "PRODUCT_NOT_READY",
+    "PRODUCTS_NOT_ENABLED",
+    "NO_ACCOUNTS",
+    "PRODUCT_NOT_AVAILABLE",
+  ].includes(data.error_code);
+}
 
 /** Sync transactions for an institution using Plaid's sync endpoint */
 export async function syncTransactions(
@@ -157,6 +170,64 @@ export async function syncInvestments(db: Database, accessToken: string) {
   insertMany();
 
   return { securities: resp.data.securities.length, holdings: resp.data.holdings.length };
+}
+
+/** Sync recurring transaction streams from Plaid */
+export async function syncRecurring(db: Database, accessToken: string) {
+  const resp = await plaidClient.transactionsRecurringGet({
+    access_token: accessToken,
+  });
+
+  const upsert = db.prepare(`
+    INSERT INTO recurring (stream_id, account_id, merchant_name, description, frequency, category, subcategory, avg_amount, last_amount, first_date, last_date, is_active, status, stream_type, updated_at)
+    VALUES (@stream_id, @account_id, @merchant_name, @description, @frequency, @category, @subcategory, @avg_amount, @last_amount, @first_date, @last_date, @is_active, @status, @stream_type, datetime('now'))
+    ON CONFLICT(stream_id) DO UPDATE SET
+      merchant_name=excluded.merchant_name, description=excluded.description,
+      avg_amount=excluded.avg_amount, last_amount=excluded.last_amount,
+      first_date=excluded.first_date, last_date=excluded.last_date,
+      is_active=excluded.is_active, status=excluded.status,
+      frequency=excluded.frequency, category=excluded.category,
+      subcategory=excluded.subcategory, stream_type=excluded.stream_type,
+      updated_at=datetime('now')
+  `);
+
+  const mapStream = (s: TransactionStream, type: "inflow" | "outflow") => ({
+    stream_id: s.stream_id,
+    account_id: s.account_id,
+    merchant_name: s.merchant_name || null,
+    description: s.description,
+    frequency: s.frequency,
+    category: s.personal_finance_category?.primary || null,
+    subcategory: s.personal_finance_category?.detailed || null,
+    avg_amount: s.average_amount.amount || 0,
+    last_amount: s.last_amount.amount || 0,
+    first_date: s.first_date,
+    last_date: s.last_date,
+    is_active: s.is_active ? 1 : 0,
+    status: s.status,
+    stream_type: type,
+  });
+
+  // Collect account_ids covered by this response
+  const allStreams = [...resp.data.outflow_streams, ...resp.data.inflow_streams];
+  const accountIds = [...new Set(allStreams.map(s => s.account_id))];
+
+  const deactivate = db.prepare(
+    `UPDATE recurring SET is_active = 0, updated_at = datetime('now') WHERE account_id = ?`
+  );
+
+  const insertMany = db.transaction(() => {
+    // Mark existing streams inactive; upsert will re-activate current ones
+    for (const aid of accountIds) deactivate.run(aid);
+    for (const s of resp.data.outflow_streams) upsert.run(mapStream(s, "outflow"));
+    for (const s of resp.data.inflow_streams) upsert.run(mapStream(s, "inflow"));
+  });
+  insertMany();
+
+  return {
+    outflows: resp.data.outflow_streams.length,
+    inflows: resp.data.inflow_streams.length,
+  };
 }
 
 /** Sync liabilities (credit, mortgage, student) */

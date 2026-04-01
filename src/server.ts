@@ -3,7 +3,7 @@ import { fileURLToPath } from "url";
 import { dirname, resolve } from "path";
 import { randomUUID } from "crypto";
 import { createLinkToken, exchangeToken } from "./plaid/link.js";
-import { syncBalances, syncTransactions } from "./plaid/sync.js";
+import { syncBalances, syncTransactions, syncInvestments, syncLiabilities, syncRecurring, isProductNotSupported } from "./plaid/sync.js";
 import { plaidClient } from "./plaid/client.js";
 import { CountryCode } from "plaid";
 import { encryptPlaidToken } from "./db/encryption.js";
@@ -118,12 +118,15 @@ export function startLinkServer(): LinkResult {
         `INSERT INTO institutions (item_id, access_token, name, products)
          VALUES (?, ?, ?, ?)
          ON CONFLICT(item_id) DO UPDATE SET access_token = excluded.access_token`
-      ).run(itemId, encryptedToken, institution_name || "Account", JSON.stringify(["transactions"]));
+      ).run(itemId, encryptedToken, institution_name || "Account", JSON.stringify(["transactions", "investments", "liabilities"]));
 
       // Trigger initial sync (Plaid may not have data ready immediately)
       const runSync = async () => {
         await syncBalances(db, accessToken);
         await syncTransactions(db, itemId, accessToken, null);
+        try { await syncInvestments(db, accessToken); } catch (e) { if (!isProductNotSupported(e)) throw e; }
+        try { await syncLiabilities(db, accessToken); } catch (e) { if (!isProductNotSupported(e)) throw e; }
+        try { await syncRecurring(db, accessToken); } catch (e) { if (!isProductNotSupported(e)) throw e; }
       };
 
       try {

@@ -64,14 +64,12 @@ function Hero() {
   return (
     <section className="relative overflow-hidden pt-32 pb-12">
       <div className="mx-auto max-w-5xl px-6 text-center">
-        <h1 className="animate-fade-up text-3xl leading-[1.1] font-extrabold tracking-tight text-stone-950 sm:text-5xl lg:text-7xl">
+        <h1 className="animate-fade-up text-4xl leading-[1.1] font-extrabold tracking-tight text-stone-950 sm:text-5xl lg:text-7xl">
           An AI financial advisor that runs on your&nbsp;machine
         </h1>
         <p className="animate-fade-up-delay-1 mx-auto mt-8 max-w-2xl text-lg leading-relaxed text-stone-500 sm:text-xl">
-          Connect your bank, ask anything, and get real answers
-          from your actual data. Your name is scrubbed before anything
-          reaches the&nbsp;AI. Open&nbsp;source. Local&#8209;first.
-          Five&nbsp;minute set&nbsp;up.
+          Ask anything about your money. Get actually helpful answers
+          from your real data. Open&nbsp;source and fully&nbsp;local.
         </p>
         <div className="animate-fade-up-delay-2 mt-10 flex flex-col items-center gap-5 sm:flex-row sm:justify-center">
           <CopyCommand
@@ -278,7 +276,7 @@ function HowItWorks() {
           How it works
         </p>
         <h2 className="mt-4 text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
-          Three commands. Five minutes.
+          Install, connect your bank, get helpful answers.
         </h2>
 
         <div className="mt-16 grid gap-12 sm:grid-cols-2">
@@ -468,12 +466,12 @@ function Features() {
             description="Category breakdowns, period comparisons, and trend detection. Ray finds the patterns you miss in your own spending."
           />
           <Feature
-            question={`"Should I pay off debt or invest?"`}
-            description="Ray simulates avalanche, snowball, and custom payoff strategies against your real balances and interest rates. Actual math, not rules of thumb."
+            question={`"How much am I spending on food delivery month over month?"`}
+            description="Ray breaks down any category across any time range. Spot trends you'd never catch scrolling through transactions."
           />
           <Feature
-            question={`"Am I on track this month?"`}
-            description="Budget pacing that warns you before you overspend, not after. Set limits in conversation and Ray tracks against real transactions."
+            question={`"Can you audit to make sure my tenants have paid for the past 12 months?"`}
+            description="Ray searches your real transaction history, flags gaps, and gives you a straight answer. Landlord, freelancer, whatever — if the data is in your bank, Ray can check it."
           />
           <Feature
             question={`"Can I afford to take this trip?"`}
@@ -506,7 +504,7 @@ function Feature({
   highlight?: boolean;
 }) {
   return (
-    <div className={highlight ? "rounded-xl border border-stone-200 bg-white p-5 -m-5 shadow-sm" : ""}>
+    <div className={highlight ? "rounded-xl border border-stone-200 bg-white p-5 sm:-m-5 shadow-sm" : ""}>
       <h3 className="font-mono text-base font-medium text-stone-900">
         {question}
       </h3>

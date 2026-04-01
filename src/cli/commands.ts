@@ -44,6 +44,41 @@ export async function runLink(): Promise<void> {
   spinner.succeed("Bank account linked successfully!");
 }
 
+export function showAccounts(): void {
+  const db = getDb();
+  const institutions = db.prepare(
+    `SELECT i.name as institution, i.item_id, i.created_at,
+            a.name, a.type, a.subtype, a.mask, a.current_balance, a.currency
+     FROM institutions i
+     LEFT JOIN accounts a ON a.item_id = i.item_id AND a.hidden = 0
+     ORDER BY i.created_at, a.type, a.current_balance DESC`
+  ).all() as { institution: string; item_id: string; created_at: string; name: string | null; type: string | null; subtype: string | null; mask: string | null; current_balance: number | null; currency: string | null }[];
+
+  if (institutions.length === 0) {
+    console.log("\nNo accounts linked. Run 'ray link' to connect one.\n");
+    return;
+  }
+
+  console.log(`\n${heading("Linked Accounts")}\n`);
+
+  let currentInst = "";
+  for (const row of institutions) {
+    if (row.institution !== currentInst) {
+      currentInst = row.institution;
+      console.log(chalk.bold(currentInst));
+    }
+    if (!row.name) {
+      console.log(dim("  No accounts found"));
+      continue;
+    }
+    const mask = row.mask ? ` ••${row.mask}` : "";
+    const balance = row.current_balance != null ? rawFormatMoney(row.current_balance) : "—";
+    const label = row.subtype || row.type || "";
+    console.log(`  ${row.name}${dim(mask)}  ${dim(label)}  ${balance}`);
+  }
+  console.log("");
+}
+
 export function showStatus(): void {
   const db = getDb();
   const nw = getNetWorth(db);

@@ -91,7 +91,7 @@ export function getAccountBalances(db: Database): { name: string; balance: numbe
   return db
     .prepare(
       `SELECT name, current_balance as balance, type FROM accounts
-       WHERE type IN ('depository', 'credit') ORDER BY type, current_balance DESC`
+       WHERE hidden = 0 ORDER BY type, current_balance DESC`
     )
     .all() as any[];
 }

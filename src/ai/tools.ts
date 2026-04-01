@@ -346,7 +346,7 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
     case "get_accounts": {
       const accounts = getAccountBalances(db);
       if (accounts.length === 0) return "No accounts linked yet.";
-      return accounts.map(a => `${a.name} (${a.type}): ${a.type === "credit" ? "-" : ""}${formatMoney(a.balance)}`).join("\n");
+      return accounts.map(a => `${a.name} (${a.type}): ${["credit", "loan"].includes(a.type) ? "-" : ""}${formatMoney(a.balance)}`).join("\n");
     }
 
     case "get_transactions": {
@@ -443,10 +443,15 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
 
     case "get_recurring": {
       const rows = db.prepare(
-        `SELECT merchant_name, avg_amount, frequency, last_date FROM recurring WHERE active = 1 ORDER BY avg_amount DESC`
-      ).all() as { merchant_name: string; avg_amount: number; frequency: string; last_date: string }[];
+        `SELECT merchant_name, description, avg_amount, last_amount, frequency, last_date, stream_type
+         FROM recurring WHERE is_active = 1 ORDER BY stream_type, avg_amount DESC`
+      ).all() as { merchant_name: string | null; description: string; avg_amount: number; last_amount: number; frequency: string; last_date: string; stream_type: string }[];
       if (rows.length === 0) return "No recurring transactions detected yet.";
-      return rows.map(r => `${r.merchant_name}: ${formatMoney(r.avg_amount)} (${r.frequency}, last: ${r.last_date})`).join("\n");
+      return rows.map(r => {
+        const name = r.merchant_name || r.description;
+        const arrow = r.stream_type === "inflow" ? "+" : "-";
+        return `${arrow} ${name}: ${formatMoney(Math.abs(r.avg_amount))} (${r.frequency.toLowerCase()}, last: ${r.last_date})`;
+      }).join("\n");
     }
 
     case "get_alerts": {

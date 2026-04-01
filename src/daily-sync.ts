@@ -5,6 +5,8 @@ import {
   syncBalances,
   syncInvestments,
   syncLiabilities,
+  syncRecurring,
+  isProductNotSupported,
 } from "./plaid/sync.js";
 import { calculateDailyScore, checkAchievements } from "./scoring/index.js";
 import { decryptPlaidToken } from "./db/encryption.js";
@@ -78,18 +80,32 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
         );
       }
 
-      // Sync investments if available
-      if (products.includes("investments")) {
+      // Sync investments
+      try {
         const invResult = await syncInvestments(db, accessToken);
         console.log(
           `  Investments: ${invResult.holdings} holdings, ${invResult.securities} securities`
         );
+      } catch (e) {
+        if (!isProductNotSupported(e)) console.error(`  Investments error: ${(e as Error).message}`);
       }
 
-      // Sync liabilities if available
-      if (products.includes("liabilities")) {
+      // Sync liabilities
+      try {
         await syncLiabilities(db, accessToken);
         console.log(`  Liabilities: synced`);
+      } catch (e) {
+        if (!isProductNotSupported(e)) console.error(`  Liabilities error: ${(e as Error).message}`);
+      }
+
+      // Sync recurring transaction streams
+      if (products.includes("transactions")) {
+        try {
+          const recResult = await syncRecurring(db, accessToken);
+          console.log(`  Recurring: ${recResult.outflows} outflows, ${recResult.inflows} inflows`);
+        } catch (e) {
+          if (!isProductNotSupported(e)) console.error(`  Recurring error: ${(e as Error).message}`);
+        }
       }
     } catch (err: any) {
       console.error(`  Error syncing ${inst.name}: ${err.message}`);

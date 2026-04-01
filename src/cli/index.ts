@@ -56,6 +56,15 @@ program
   });
 
 program
+  .command("accounts")
+  .description("Show linked accounts and balances")
+  .action(async () => {
+    ensureConfigured();
+    const { showAccounts } = await import("./commands.js");
+    showAccounts();
+  });
+
+program
   .command("status")
   .description("Show financial overview")
   .action(async () => {
@@ -174,6 +183,30 @@ program
     }
   });
 
+program
+  .command("update")
+  .description("Update Ray to the latest version")
+  .action(async () => {
+    const { runUpdate } = await import("./updater.js");
+    await runUpdate(version);
+  });
+
+program
+  .command("doctor")
+  .description("Check system health")
+  .action(async () => {
+    const { runDoctor } = await import("./doctor.js");
+    await runDoctor();
+  });
+
+program
+  .command("completions")
+  .description("Install shell completions")
+  .action(async () => {
+    const { installCompletions } = await import("./completions.js");
+    installCompletions();
+  });
+
 function ensureConfigured(): void {
   if (!isConfigured()) {
     console.error("Ray is not configured. Run 'ray setup' first.");
@@ -187,6 +220,7 @@ program.configureHelp({
     { name: "setup", desc: "Configure Ray (API keys, preferences)" },
     { name: "link", desc: "Link a new financial account via Plaid" },
     { name: "sync", desc: "Sync transactions from linked banks" },
+    { name: "accounts", desc: "Show linked accounts and balances" },
     { name: "status", desc: "Show financial overview" },
     { name: "transactions", desc: "Show recent transactions" },
     { name: "spending", desc: "Show spending breakdown" },
@@ -197,7 +231,12 @@ program.configureHelp({
     { name: "export", desc: "Export data to a backup file" },
     { name: "import", desc: "Restore data from a backup file" },
     { name: "billing", desc: "Manage your Ray subscription" },
+    { name: "update", desc: "Update Ray to the latest version" },
+    { name: "doctor", desc: "Check system health" },
+    { name: "completions", desc: "Install shell completions" },
   ]),
 });
+
+import("./updater.js").then(m => m.checkForUpdate(version)).catch(() => {});
 
 program.parse();

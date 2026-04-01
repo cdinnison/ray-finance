@@ -83,39 +83,27 @@ export function generateAlerts(db: Database): Alert[] {
     }
   }
 
-  // Subscription price changes (compare last 2 occurrences of recurring merchants)
+  // Subscription price changes — uses Plaid's recurring transaction streams
   const recurring = db
     .prepare(
-      `SELECT merchant_name, amount, date FROM transactions
-       WHERE merchant_name IN (
-         SELECT merchant_name FROM transactions
-         WHERE merchant_name IS NOT NULL AND amount > 0
-         GROUP BY merchant_name HAVING COUNT(*) >= 2
-       )
-       AND amount > 0 AND pending = 0
-       ORDER BY merchant_name, date DESC`
+      `SELECT merchant_name, description, avg_amount, last_amount, frequency, status
+       FROM recurring
+       WHERE is_active = 1 AND stream_type = 'outflow' AND status = 'MATURE'
+         AND last_amount IS NOT NULL AND avg_amount IS NOT NULL`
     )
-    .all() as { merchant_name: string; amount: number; date: string }[];
+    .all() as { merchant_name: string | null; description: string; avg_amount: number; last_amount: number; frequency: string; status: string }[];
 
-  const byMerchant: Record<string, { amount: number; date: string }[]> = {};
   for (const r of recurring) {
-    if (!byMerchant[r.merchant_name]) byMerchant[r.merchant_name] = [];
-    if (byMerchant[r.merchant_name].length < 2) {
-      byMerchant[r.merchant_name].push({ amount: r.amount, date: r.date });
-    }
-  }
-
-  for (const [merchant, charges] of Object.entries(byMerchant)) {
-    if (charges.length === 2) {
-      const diff = Math.abs(charges[0].amount - charges[1].amount);
-      if (diff > 0.5 && diff / charges[1].amount > 0.05) {
-        alerts.push({
-          type: "price_change",
-          severity: "info",
-          message: `Price change: ${merchant} went from $${charges[1].amount} to $${charges[0].amount}`,
-          data: { merchant, previous: charges[1].amount, current: charges[0].amount },
-        });
-      }
+    if (r.avg_amount === 0) continue;
+    const diff = Math.abs(r.last_amount - r.avg_amount);
+    if (diff > 0.5 && diff / Math.abs(r.avg_amount) > 0.05) {
+      const name = r.merchant_name || r.description;
+      alerts.push({
+        type: "price_change",
+        severity: "info",
+        message: `Price change: ${name} went from $${Math.abs(r.avg_amount).toFixed(2)} to $${Math.abs(r.last_amount).toFixed(2)} (${r.frequency.toLowerCase()})`,
+        data: { merchant: name, previous: r.avg_amount, current: r.last_amount, frequency: r.frequency },
+      });
     }
   }
 

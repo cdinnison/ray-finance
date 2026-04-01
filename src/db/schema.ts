@@ -107,14 +107,21 @@ export function migrate(db: Database.Database): void {
     );
 
     CREATE TABLE IF NOT EXISTS recurring (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      merchant_name TEXT NOT NULL,
-      avg_amount REAL NOT NULL,
+      stream_id TEXT PRIMARY KEY,
+      account_id TEXT,
+      merchant_name TEXT,
+      description TEXT NOT NULL,
       frequency TEXT NOT NULL,
       category TEXT,
+      subcategory TEXT,
+      avg_amount REAL NOT NULL,
+      last_amount REAL,
+      first_date TEXT,
       last_date TEXT,
-      account_id TEXT,
-      active INTEGER DEFAULT 1
+      is_active INTEGER DEFAULT 1,
+      status TEXT,
+      stream_type TEXT NOT NULL DEFAULT 'outflow',
+      updated_at TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS daily_scores (
@@ -198,5 +205,30 @@ export function migrate(db: Database.Database): void {
   const goalCols = db.prepare(`PRAGMA table_info(goals)`).all() as { name: string }[];
   if (goalCols.some(c => c.name === "deadline") && !goalCols.some(c => c.name === "target_date")) {
     db.exec(`ALTER TABLE goals RENAME COLUMN deadline TO target_date`);
+  }
+
+  // Migrate: rebuild recurring table to use Plaid stream schema
+  const recCols = db.prepare(`PRAGMA table_info(recurring)`).all() as { name: string }[];
+  if (!recCols.some(c => c.name === "stream_id")) {
+    db.exec(`DROP TABLE IF EXISTS recurring`);
+    db.exec(`
+      CREATE TABLE recurring (
+        stream_id TEXT PRIMARY KEY,
+        account_id TEXT,
+        merchant_name TEXT,
+        description TEXT NOT NULL,
+        frequency TEXT NOT NULL,
+        category TEXT,
+        subcategory TEXT,
+        avg_amount REAL NOT NULL,
+        last_amount REAL,
+        first_date TEXT,
+        last_date TEXT,
+        is_active INTEGER DEFAULT 1,
+        status TEXT,
+        stream_type TEXT NOT NULL DEFAULT 'outflow',
+        updated_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
   }
 }

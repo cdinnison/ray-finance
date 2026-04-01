@@ -67,7 +67,7 @@ function buildSnapshot(db: Database.Database): string {
   const accounts = getAccountBalances(db).slice(0, 5);
   if (accounts.length > 0) {
     lines.push(accounts.map(a =>
-      `${a.name} (${a.type}): ${a.type === "credit" ? "-" : ""}${formatMoney(a.balance)}`
+      `${a.name} (${a.type}): ${["credit", "loan"].includes(a.type) ? "-" : ""}${formatMoney(a.balance)}`
     ).join(" | "));
   }
 

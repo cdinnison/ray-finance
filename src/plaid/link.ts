@@ -7,6 +7,7 @@ export async function createLinkToken(products: Products[] = [Products.Transacti
     user: { client_user_id: "ray-user" },
     client_name: "Ray Finance",
     products,
+    optional_products: [Products.Investments, Products.Liabilities],
     country_codes: [CountryCode.Us],
     language: "en",
   });
