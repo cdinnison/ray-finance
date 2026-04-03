@@ -107,7 +107,7 @@ function Terminal() {
             </span>
           </div>
           {/* Content */}
-          <div className="overflow-x-auto p-5 font-mono text-[11px] leading-[1.7] sm:p-8 sm:text-[13px]">
+          <div className="overflow-x-auto p-5 font-mono text-[11px] leading-[1.7] sm:p-8 sm:text-[13px] h-[400px] sm:h-[360px]">
             <p className="text-stone-500">tuesday, apr 1</p>
             <Blank />
             <p className="text-stone-300">
