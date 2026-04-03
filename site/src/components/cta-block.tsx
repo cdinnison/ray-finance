@@ -12,7 +12,7 @@ export function CTABlock() {
         </p>
         <div className="mt-8 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
           <CopyCommand
-            command="npx ray-finance"
+            command="npm install -g ray-finance"
             className="rounded-full border border-stone-800 bg-stone-900 px-6 py-3.5 text-sm text-white"
           />
           <a

@@ -64,10 +64,10 @@ function Hero() {
   return (
     <section className="relative overflow-hidden pt-32 pb-12">
       <div className="mx-auto max-w-5xl px-6 text-center">
-        <h1 className="animate-fade-up text-5xl leading-[1.1] font-black tracking-tight text-stone-950 sm:text-7xl lg:text-8xl">
+        <h1 className="animate-fade-up text-6xl leading-[1.05] font-black tracking-tight text-stone-950 sm:text-7xl lg:text-8xl">
           Talk to your&nbsp;money
         </h1>
-        <p className="animate-fade-up-delay-1 mx-auto mt-8 max-w-2xl text-lg leading-relaxed text-stone-500 sm:text-xl">
+        <p className="animate-fade-up-delay-1 mx-auto mt-5 max-w-2xl text-lg leading-relaxed text-stone-500 sm:text-xl">
           Ray is an AI financial advisor that connects to your bank, understands your full picture, and gives real advice&mdash;all local on your machine.
         </p>
         <div className="animate-fade-up-delay-2 mt-10 flex flex-col items-center gap-3">
@@ -141,7 +141,7 @@ function Story() {
   return (
     <section id="story" className="py-24 sm:py-32">
       <div className="mx-auto max-w-3xl px-6">
-        <h2 className="text-3xl font-extrabold tracking-tight text-stone-950 sm:text-4xl">
+        <h2 className="text-center text-3xl font-extrabold tracking-tight text-stone-950 sm:text-4xl">
           You&rsquo;ve tried everything else.
         </h2>
 
@@ -487,9 +487,9 @@ function Pricing() {
           </p>
         </div>
 
-        <div className="mx-auto mt-16 grid max-w-4xl gap-8 sm:grid-cols-2">
+        <div className="mx-auto mt-16 grid max-w-4xl gap-8 sm:grid-cols-2 items-start">
           {/* Self-Hosted */}
-          <div className="rounded-2xl border border-sand-200 bg-white p-8">
+          <div className="rounded-2xl border border-sand-200 bg-white p-8 flex flex-col sm:min-h-[560px]">
             <div className="flex items-center gap-3">
               <h3 className="text-lg font-bold text-stone-900">Self-Hosted</h3>
               <span className="rounded-full bg-stone-100 px-2.5 py-0.5 text-xs font-medium text-stone-500">
@@ -520,10 +520,41 @@ function Pricing() {
             >
               View source on GitHub
             </a>
+            <div className="grow" />
+
+            <details className="pt-6 group">
+              <summary className="cursor-pointer select-none w-full rounded-lg border border-stone-200 px-4 py-3 text-xs text-stone-400 hover:border-stone-300 hover:text-stone-500 transition-colors flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <svg className="h-3 w-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                  Steps to self-host
+                </span>
+                <span className="font-mono text-[10px] text-stone-300 group-open:hidden">~2 weeks</span>
+              </summary>
+              <div className="mt-4 ml-1 border-l-2 border-stone-200 pl-4 space-y-4">
+                <SetupStep time="~5 min" href="/guides/get-anthropic-api-key">
+                  Sign up for Anthropic &amp; add billing
+                </SetupStep>
+                <SetupStep time="~5 min" href="/guides/get-plaid-credentials">
+                  Create Plaid developer account
+                </SetupStep>
+                <SetupStep time="1-2 weeks" href="/guides/get-plaid-credentials">
+                  Apply for Plaid production access
+                </SetupStep>
+                <SetupStep time="~5 min">
+                  Run <code className="rounded bg-stone-100 px-1 py-0.5">ray setup</code>, paste keys
+                </SetupStep>
+                <SetupStep time="~2 min">
+                  Run <code className="rounded bg-stone-100 px-1 py-0.5">ray link</code> to connect bank
+                </SetupStep>
+              </div>
+              <p className="mt-4 ml-1 text-[11px] font-mono text-stone-400">
+                ~20 min of work + 1-2 week wait for Plaid approval
+              </p>
+            </details>
           </div>
 
           {/* Ray API Key */}
-          <div className="rounded-2xl border-2 border-stone-900 bg-white p-8">
+          <div className="rounded-2xl border-2 border-stone-900 bg-white p-8 flex flex-col sm:min-h-[560px]">
             <div className="flex items-center gap-3">
               <h3 className="text-lg font-bold text-stone-900">
                 Ray Hosted Keys
@@ -544,7 +575,6 @@ function Pricing() {
             <ul className="mt-8 space-y-3 text-sm text-stone-600">
               <PricingItem>AI and bank access included</PricingItem>
               <PricingItem>No Plaid application needed</PricingItem>
-              <PricingItem>Ready in 5 minutes</PricingItem>
               <PricingItem>Same privacy guarantees</PricingItem>
               <PricingItem>All features included</PricingItem>
               <PricingItem>Cancel anytime</PricingItem>
@@ -553,11 +583,50 @@ function Pricing() {
               command="npm install -g ray-finance"
               className="mt-8 block rounded-lg bg-stone-900 px-4 py-3 text-center text-sm text-white shadow-lg shadow-stone-900/20 transition-colors hover:bg-stone-800 [&>span:first-child]:text-stone-500"
             />
+            <div className="grow" />
+
+            <details className="pt-6 group">
+              <summary className="cursor-pointer select-none w-full rounded-lg border border-stone-200 px-4 py-3 text-xs text-stone-400 hover:border-stone-300 hover:text-stone-500 transition-colors flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <svg className="h-3 w-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                  Steps to sign up
+                </span>
+                <span className="font-mono text-[10px] text-stone-300 group-open:hidden">~5 min</span>
+              </summary>
+              <div className="mt-4 ml-1 border-l-2 border-stone-200 pl-4 space-y-4">
+                <SetupStep time="~2 min">
+                  Run <code className="rounded bg-stone-100 px-1 py-0.5">ray setup</code> to get your key
+                </SetupStep>
+                <SetupStep time="~1 min">
+                  Run <code className="rounded bg-stone-100 px-1 py-0.5">ray link</code> to connect bank
+                </SetupStep>
+              </div>
+              <p className="mt-4 ml-1 text-[11px] font-mono text-stone-400">
+                Total: ~3 minutes
+              </p>
+            </details>
           </div>
         </div>
       </div>
     </section>
   );
+}
+
+function SetupStep({ children, time, href }: { children: React.ReactNode; time: string; href?: string }) {
+  const content = (
+    <div className="flex items-start justify-between gap-3">
+      <p className="text-xs text-stone-500">{children}</p>
+      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-mono ${
+        time.includes("week") ? "bg-amber-50 text-amber-600" : "bg-stone-100 text-stone-400"
+      }`}>
+        {time}
+      </span>
+    </div>
+  );
+  if (href) {
+    return <a href={href} target="_blank" rel="noopener noreferrer" className="block hover:opacity-70 transition-opacity">{content}</a>;
+  }
+  return content;
 }
 
 function PricingItem({ children }: { children: React.ReactNode }) {

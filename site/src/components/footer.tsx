@@ -44,11 +44,11 @@ const columns = [
   {
     title: "Resources",
     links: [
+      { label: "Setup Guides", href: "/guides" },
+      { label: "Get Anthropic Key", href: "/guides/get-anthropic-api-key" },
+      { label: "Get Plaid Credentials", href: "/guides/get-plaid-credentials" },
       { label: "Best Budgeting Apps", href: "/best/budgeting-apps" },
-      { label: "Best AI Finance Apps", href: "/best/ai-finance-apps" },
-      { label: "Mint Alternatives", href: "/best/mint-alternatives" },
       { label: "GitHub", href: "https://github.com/cdinnison/ray-finance" },
-      { label: "Contributing", href: "https://github.com/cdinnison/ray-finance/blob/main/CONTRIBUTING.md" },
     ],
   },
 ];

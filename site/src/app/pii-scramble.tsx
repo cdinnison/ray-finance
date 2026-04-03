@@ -127,7 +127,7 @@ export function PIIScramble() {
 
     if (wordIdx < anim.activeWord || done) {
       // Already redacted
-      return { text: seg.redacted!, color: "text-stone-400" };
+      return { text: seg.redacted!, color: "text-green-400" };
     }
 
     // Currently scrambling this word
@@ -138,7 +138,7 @@ export function PIIScramble() {
   }
 
   const statusLabel = done
-    ? "PII redacted before sending to AI"
+    ? "PII redacted — safe to send"
     : scrambling
       ? "Redacting..."
       : "Raw financial data";
@@ -149,7 +149,7 @@ export function PIIScramble() {
         <div
           className={`h-2 w-2 rounded-full transition-colors duration-300 ${
             done
-              ? "bg-stone-400"
+              ? "bg-green-400"
               : scrambling
                 ? "bg-amber-400 animate-pulse"
                 : "bg-stone-300"
@@ -181,7 +181,7 @@ export function PIIScramble() {
           PII in local database
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2 w-2 rounded-full bg-stone-400" />
+          <span className="inline-block h-2 w-2 rounded-full bg-green-400" />
           What the AI receives
         </span>
       </div>
