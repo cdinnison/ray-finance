@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/ray-logo.png" alt="Ray" width="120" />
+  <img src=".github/ray-logo.png" alt="Ray" width="108" />
 </p>
 
 <p align="center">
@@ -15,7 +15,7 @@
 <br />
 
 <p align="center">
-  <img src=".github/ray-demo.png" alt="Ray demo" width="720" />
+  <img src=".github/ray-demo.png" alt="Ray demo" />
 </p>
 
 Open Ray and it shows your net worth, spending vs last month, budget pacing, and upcoming bills — before you type a word. Ask a question and it answers from your real data, not guesses. Local-first. Encrypted. Open source.
