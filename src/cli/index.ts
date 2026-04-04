@@ -1,8 +1,23 @@
 #!/usr/bin/env node
+import { resolve } from "path";
+import { homedir } from "os";
+
+// --demo flag: use dedicated demo database (must run before config import)
+const isDemoMode = process.argv.includes("--demo");
+if (isDemoMode) {
+  process.argv = process.argv.filter(a => a !== "--demo");
+}
+
 import { Command } from "commander";
 import { createRequire } from "module";
 import { config, isConfigured, useManaged, RAY_PROXY_BASE } from "../config.js";
 import { helpScreen } from "./format.js";
+
+// Override config for demo mode (demo DB is unencrypted)
+if (isDemoMode) {
+  config.dbPath = resolve(homedir(), ".ray", "data", "demo.db");
+  config.dbEncryptionKey = "";
+}
 
 const require = createRequire(import.meta.url);
 const { version } = require("../../package.json");
@@ -200,6 +215,15 @@ program
   });
 
 program
+  .command("demo")
+  .description("Seed a demo database with realistic fake data")
+  .action(async () => {
+    const demoPath = resolve(homedir(), ".ray", "data", "demo.db");
+    const { seedDemoDb } = await import("../demo/seed.js");
+    seedDemoDb(demoPath);
+  });
+
+program
   .command("completions")
   .description("Install shell completions")
   .action(async () => {
@@ -208,6 +232,7 @@ program
   });
 
 function ensureConfigured(): void {
+  if (isDemoMode) return;
   if (!isConfigured()) {
     console.error("Ray is not configured. Run 'ray setup' first.");
     process.exit(1);
@@ -233,6 +258,7 @@ program.configureHelp({
     { name: "billing", desc: "Manage your Ray subscription" },
     { name: "update", desc: "Update Ray to the latest version" },
     { name: "doctor", desc: "Check system health" },
+    { name: "demo", desc: "Seed a demo database with fake data" },
     { name: "completions", desc: "Install shell completions" },
   ]),
 });

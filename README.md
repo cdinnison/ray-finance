@@ -14,34 +14,9 @@
 
 <br />
 
-```
-  Friday, Mar 28
-
-  net worth  $45,230 +$120
-
-  spending   $2,340 this month · $340 less vs last month
-             Dining -$114  ·  Shopping -$142  ·  Groceries -$73
-
-  ▓▓▓▓▓▓▓░  Dining 92%
-
-  ▓▓▓▓░░░░  Emergency fund $18,200/$40,000
-
-  upcoming   Netflix $16 in 3d  ·  Comcast $142 in 6d
-
-  score      72/100  ·  5d no dining  ·  3d on pace
-
-  ──────────────────────────────────────────────────
-
-  ❯ if I quit my job to freelance, how long can I survive?
-
-  Based on your last 3 months: you burn $4,820/mo after
-  fixed costs. With $18,200 in savings, that's
-  3.8 months of runway at current spend.
-
-  Cut dining and shopping to last-month levels and
-  you stretch to 5.1 months. Land one $8k contract
-  in that window and you never dip below $10k.
-```
+<p align="center">
+  <img src=".github/ray-demo.png" alt="Ray demo" width="720" />
+</p>
 
 Open Ray and it shows your net worth, spending vs last month, budget pacing, and upcoming bills — before you type a word. Ask a question and it answers from your real data, not guesses. Local-first. Encrypted. Open source.
 
@@ -64,6 +39,26 @@ Open Ray and it shows your net worth, spending vs last month, budget pacing, and
 ```bash
 npm install -g ray-finance
 ```
+
+## Try It
+
+Explore Ray with realistic fake data — no bank accounts needed.
+
+```bash
+ray demo                # seed a demo database
+ray --demo status       # financial overview
+ray --demo accounts     # linked accounts with balances
+ray --demo spending     # spending breakdown by category
+ray --demo budgets      # budget tracking
+ray --demo goals        # financial goal progress
+ray --demo score        # daily score, streaks, achievements
+ray --demo alerts       # financial alerts
+ray --demo transactions # recent transactions
+```
+
+The dashboard commands work with no setup at all. To also try the AI chat with demo data, run `ray setup` first and add an [Anthropic API key](https://console.anthropic.com) or Ray API key — then `ray --demo` will start an interactive session where you can ask questions about the fake portfolio.
+
+When you're ready to connect real accounts, run `ray link`.
 
 ## Quick Start
 
@@ -98,6 +93,8 @@ Run `ray --help` to see all available commands.
 | Command | Description |
 |---------|-------------|
 | `ray` | Interactive AI chat with your financial advisor |
+| `ray demo` | Seed a demo database with realistic fake data |
+| `ray --demo <cmd>` | Run any command against demo data |
 | `ray setup` | Configure API keys and preferences |
 | `ray link` | Connect a new bank account |
 | `ray sync` | Pull latest transactions and balances |
@@ -155,6 +152,7 @@ Ray stores everything in `~/.ray/`:
   context.md           # Persistent financial context for AI
   data/
     finance.db         # Encrypted SQLite database
+    demo.db            # Demo database (created by `ray demo`)
   sync.log             # Daily sync output
 ```
 
@@ -174,6 +172,7 @@ RAY_API_KEY=           # Ray API key (managed mode, replaces the above)
 
 ## Roadmap
 
+- [ ] Bring your own model — use any LLM provider (OpenAI, Ollama, open-source models, etc.)
 - [ ] Daily digest email — morning summary of your finances
 
 Have an idea? [Open a PR](https://github.com/cdinnison/ray-finance/pulls).
