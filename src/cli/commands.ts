@@ -9,6 +9,7 @@ import { getLatestScore, getAchievements, getMonthlySavings } from "../scoring/i
 import { generateAlerts } from "../alerts/index.js";
 import { runDailySync } from "../daily-sync.js";
 import { startLinkServer } from "../server.js";
+import { addManualAccount, getManualAccounts, removeManualAccount, scrapeRedfinEstimate } from "../property.js";
 import { heading, progressBar, formatMoney, formatMoneyColored, padColumns, dim, formatDuration, formatError, renderLogo, institutionName } from "./format.js";
 
 export async function runSync(): Promise<void> {
@@ -30,6 +31,7 @@ export async function runSync(): Promise<void> {
 export async function runLink(): Promise<void> {
   const open = (await import("open")).default;
   const ora = (await import("ora")).default;
+  const readline = await import("readline");
 
   const { url, waitForComplete, stop } = startLinkServer();
   console.log(`\n${heading("Link Account")}\n`);
@@ -42,6 +44,41 @@ export async function runLink(): Promise<void> {
   await waitForComplete();
   stop();
   spinner.succeed("Bank account linked successfully!");
+
+  // Check if a mortgage was linked and we don't already have a property account
+  const db = getDb();
+  const hasMortgage = db.prepare(
+    `SELECT 1 FROM accounts WHERE type = 'loan' AND subtype = 'mortgage' LIMIT 1`
+  ).get();
+  const hasProperty = db.prepare(
+    `SELECT 1 FROM accounts WHERE type = 'other' AND subtype = 'property' LIMIT 1`
+  ).get();
+
+  if (hasMortgage && !hasProperty) {
+    console.log(`\n${dim("Mortgage detected.")} Track your home value for accurate net worth.`);
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const ask = (q: string) => new Promise<string>(resolve => rl.question(q, resolve));
+
+    const listingUrl = (await ask(`${dim("Paste a Redfin URL (or press Enter to skip):")} `)).trim();
+    if (listingUrl) {
+      const name = (await ask(`${dim("Name (e.g. Primary Residence):")} `)).trim() || "Primary Residence";
+      rl.close();
+      const propSpinner = ora("Fetching home value...").start();
+      try {
+        const value = await scrapeRedfinEstimate(listingUrl);
+        if (value) {
+          addManualAccount(db, name, "asset", value, listingUrl);
+          propSpinner.succeed(`${name}: ${rawFormatMoney(value)} — updates automatically on sync.`);
+        } else {
+          propSpinner.fail("Could not determine home value from that URL. Try 'ray add' later.");
+        }
+      } catch {
+        propSpinner.fail("Failed to fetch home value. Try 'ray add' later.");
+      }
+    } else {
+      rl.close();
+    }
+  }
 }
 
 export async function showAccounts(): Promise<void> {
@@ -279,6 +316,120 @@ export function showScore(): void {
       console.log(`    🏆 ${chalk.bold(a.name)} — ${a.description}`);
     }
   }
+  console.log();
+}
+
+export async function runAdd(): Promise<void> {
+  const ora = (await import("ora")).default;
+  const inquirer = (await import("inquirer")).default;
+  const db = getDb();
+
+  const theme = {
+    prefix: { idle: " ", done: chalk.green(" ✓") },
+    style: { highlight: (text: string) => chalk.yellowBright(text) },
+  };
+
+  console.log(`\n${heading("Add Account")}`);
+  console.log(dim("  Track something not linked via Plaid — a home, car, crypto, loan, etc.\n"));
+
+  const { name } = await inquirer.prompt([{theme,
+    type: "input",
+    name: "name",
+    message: "Name",
+    validate: (v: string) => v.trim() ? true : "Required",
+  }]);
+
+  const { type } = await inquirer.prompt([{theme,
+    type: "list",
+    name: "type",
+    message: "Type",
+    choices: [
+      { name: "Asset — something you own (adds to net worth)", value: "asset" as const },
+      { name: "Liability — something you owe (subtracts from net worth)", value: "liability" as const },
+    ],
+  }]);
+
+  let finalBalance = 0;
+  let listingUrl: string | undefined;
+
+  // For assets: offer Redfin auto-tracking
+  if (type === "asset") {
+    const { redfin } = await inquirer.prompt([{theme,
+      type: "input",
+      name: "redfin",
+      message: `Redfin URL ${dim("(optional — auto-tracks home value)")}`,
+    }]);
+
+    const url = redfin.trim();
+    if (url) {
+      try {
+        const parsed = new URL(url);
+        if (!parsed.hostname.includes("redfin")) {
+          console.log(chalk.yellow("  Only Redfin URLs are supported."));
+        } else {
+          listingUrl = url;
+          const spinner = ora("Fetching Redfin Estimate...").start();
+          const scraped = await scrapeRedfinEstimate(url);
+          if (scraped) {
+            finalBalance = scraped;
+            spinner.succeed(`Redfin Estimate: ${chalk.bold(rawFormatMoney(scraped))} ${dim("— updates on each sync")}`);
+          } else {
+            spinner.warn("Could not fetch estimate.");
+            listingUrl = undefined;
+          }
+        }
+      } catch {
+        console.log(chalk.yellow("  Invalid URL."));
+      }
+    }
+  }
+
+  // Manual value if no Redfin
+  if (!listingUrl) {
+    const { balance } = await inquirer.prompt([{theme,
+      type: "input",
+      name: "balance",
+      message: "Current value ($)",
+      validate: (v: string) => {
+        const n = parseFloat(v.replace(/[$,]/g, ""));
+        return isNaN(n) ? "Enter a number" : true;
+      },
+    }]);
+    finalBalance = parseFloat(balance.replace(/[$,]/g, ""));
+  }
+
+  addManualAccount(db, name.trim(), type, finalBalance, listingUrl);
+  const label = type === "asset" ? chalk.green("asset") : chalk.red("liability");
+  console.log(`\n  ${chalk.green("+")} ${chalk.bold(name.trim())}  ${rawFormatMoney(finalBalance)}  ${label}\n`);
+}
+
+export async function runRemove(): Promise<void> {
+  const readline = await import("readline");
+  const db = getDb();
+
+  const accounts = getManualAccounts(db);
+  if (accounts.length === 0) {
+    console.log("\nNo manual accounts. Use 'ray add' to create one.");
+    return;
+  }
+
+  console.log(`\n${heading("Manual Accounts")}\n`);
+  for (let i = 0; i < accounts.length; i++) {
+    const a = accounts[i];
+    const typeLabel = a.type === "loan" || a.type === "credit" ? "liability" : "asset";
+    const url = a.listing_url ? dim(` — ${a.listing_url}`) : "";
+    console.log(`  ${dim(`${i + 1}.`)} ${a.name}  ${rawFormatMoney(a.current_balance)} (${typeLabel})${url}`);
+  }
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = (await new Promise<string>(resolve => rl.question(`\n  Remove which? (number, or Enter to cancel): `, resolve))).trim();
+  rl.close();
+
+  const idx = parseInt(answer, 10) - 1;
+  if (isNaN(idx) || idx < 0 || idx >= accounts.length) return;
+
+  removeManualAccount(db, accounts[idx].account_id);
+  console.log(chalk.green(`\n  Removed ${accounts[idx].name}.`));
   console.log();
 }
 

@@ -71,6 +71,24 @@ program
   });
 
 program
+  .command("add")
+  .description("Add a manual account (home, car, crypto, etc.)")
+  .action(async () => {
+    ensureConfigured();
+    const { runAdd } = await import("./commands.js");
+    await runAdd();
+  });
+
+program
+  .command("remove")
+  .description("Remove a manual account")
+  .action(async () => {
+    ensureConfigured();
+    const { runRemove } = await import("./commands.js");
+    await runRemove();
+  });
+
+program
   .command("accounts")
   .description("Show linked accounts and balances")
   .action(async () => {
@@ -244,6 +262,8 @@ program.configureHelp({
   formatHelp: () => helpScreen([
     { name: "setup", desc: "Configure Ray (API keys, preferences)" },
     { name: "link", desc: "Link a new financial account via Plaid" },
+    { name: "add", desc: "Add a manual account (home, car, crypto, etc.)" },
+    { name: "remove", desc: "Remove a manual account" },
     { name: "sync", desc: "Sync transactions from linked banks" },
     { name: "accounts", desc: "Show linked accounts and balances" },
     { name: "status", desc: "Show financial overview" },

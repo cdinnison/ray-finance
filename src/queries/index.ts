@@ -43,11 +43,11 @@ export function getNetWorth(db: Database): {
   prev_net_worth: number | null;
 } {
   const home = db
-    .prepare(`SELECT current_balance as value FROM accounts WHERE type = 'other' AND subtype = 'property' LIMIT 1`)
-    .get() as { value: number } | undefined;
+    .prepare(`SELECT COALESCE(SUM(current_balance), 0) as value FROM accounts WHERE type = 'other' AND subtype = 'property'`)
+    .get() as { value: number };
   const mortgage = db
-    .prepare(`SELECT current_balance as value FROM accounts WHERE type = 'loan' AND subtype = 'mortgage' LIMIT 1`)
-    .get() as { value: number } | undefined;
+    .prepare(`SELECT COALESCE(SUM(current_balance), 0) as value FROM accounts WHERE type = 'loan' AND subtype = 'mortgage'`)
+    .get() as { value: number };
   const investments = db
     .prepare(`SELECT COALESCE(SUM(current_balance), 0) as total FROM accounts WHERE type = 'investment'`)
     .get() as { total: number };
@@ -70,8 +70,8 @@ export function getNetWorth(db: Database): {
     .prepare(`SELECT net_worth FROM net_worth_history WHERE date <= ? ORDER BY date DESC LIMIT 1`)
     .get(yesterday) as { net_worth: number } | undefined;
 
-  const homeVal = home?.value || 0;
-  const mortgageVal = mortgage?.value || 0;
+  const homeVal = home.value;
+  const mortgageVal = mortgage.value;
 
   return {
     net_worth: assets.total - liabilities.total,

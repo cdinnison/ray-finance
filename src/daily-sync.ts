@@ -14,6 +14,7 @@ import { calculateDailyScore, checkAchievements } from "./scoring/index.js";
 import { decryptPlaidToken } from "./db/encryption.js";
 import { config } from "./config.js";
 import { institutionName } from "./cli/format.js";
+import { refreshPropertyValues, hasListingUrls } from "./property.js";
 
 export interface SyncResult {
   transactionsAdded: number;
@@ -132,6 +133,15 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
       }
     } catch (err: any) {
       console.error(`  Error syncing ${inst.name}: ${err.message}`);
+    }
+  }
+
+  // Refresh property values from listing URLs if configured
+  if (hasListingUrls(db)) {
+    try {
+      await refreshPropertyValues(db);
+    } catch {
+      // Non-fatal
     }
   }
 

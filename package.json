@@ -1,6 +1,6 @@
 {
   "name": "ray-finance",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Local-first CLI that turns your bank data into a personal AI financial advisor",
   "type": "module",
   "license": "MIT",

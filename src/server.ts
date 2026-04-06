@@ -118,6 +118,26 @@ export function startLinkServer(): LinkResult {
       const itemResp = await plaidClient.itemGet({ access_token: accessToken });
       const products: string[] = (itemResp.data.item.products || []) as string[];
 
+      // Remove duplicate institution if re-linking the same one (Plaid gives a new item_id each time)
+      const institutionId = req.body.institution_id;
+      if (institutionId) {
+        const existing = db.prepare(
+          `SELECT item_id FROM institutions WHERE name = ? AND item_id != ?`
+        ).all(institution_name, itemId) as { item_id: string }[];
+        for (const old of existing) {
+          const oldAccounts = db.prepare(`SELECT account_id FROM accounts WHERE item_id = ?`).all(old.item_id) as { account_id: string }[];
+          for (const acct of oldAccounts) {
+            db.prepare(`DELETE FROM transactions WHERE account_id = ?`).run(acct.account_id);
+            db.prepare(`DELETE FROM holdings WHERE account_id = ?`).run(acct.account_id);
+            db.prepare(`DELETE FROM investment_transactions WHERE account_id = ?`).run(acct.account_id);
+            db.prepare(`DELETE FROM liabilities WHERE account_id = ?`).run(acct.account_id);
+            db.prepare(`DELETE FROM recurring WHERE account_id = ?`).run(acct.account_id);
+          }
+          db.prepare(`DELETE FROM accounts WHERE item_id = ?`).run(old.item_id);
+          db.prepare(`DELETE FROM institutions WHERE item_id = ?`).run(old.item_id);
+        }
+      }
+
       db.prepare(
         `INSERT INTO institutions (item_id, access_token, name, products)
          VALUES (?, ?, ?, ?)
@@ -182,9 +202,21 @@ export function startLinkServer(): LinkResult {
         } catch {}
       }
 
+      // Check if this institution has a mortgage (prompt user for home value)
+      const hasMortgage = !!(db.prepare(
+        `SELECT 1 FROM accounts WHERE item_id = ? AND type = 'loan' AND subtype = 'mortgage' LIMIT 1`
+      ).get(itemId));
+      const hasPropertyAccount = !!(db.prepare(
+        `SELECT 1 FROM accounts WHERE account_id = 'manual-home' LIMIT 1`
+      ).get());
+
       // Clean up session
       linkSessions.delete(session_id);
-      res.json({ success: true, institution_name: institution_name, institution_logo: institutionLogo });
+      res.json({
+        success: true,
+        institution_name: institution_name,
+        institution_logo: institutionLogo,
+      });
 
       // Signal completion
       resolveComplete!();

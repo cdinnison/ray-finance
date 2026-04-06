@@ -61,24 +61,16 @@
     button:disabled { opacity: 0.3; cursor: not-allowed; }
     .success { color: #34d399; font-weight: 500; }
     .error { color: #f87171; font-size: 13px; margin-top: 16px; }
-    .checkmark {
-      width: 40px;
-      height: 40px;
-      border: 2px solid #34d399;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin: 0 auto 20px;
-    }
-    .checkmark svg {
-      width: 20px;
-      height: 20px;
+    .success-title-check {
+      width: 18px;
+      height: 18px;
       stroke: #34d399;
       fill: none;
       stroke-width: 2.5;
       stroke-linecap: round;
       stroke-linejoin: round;
+      vertical-align: -2px;
+      margin-right: 6px;
     }
     .institution-logo {
       width: 48px;
@@ -110,15 +102,14 @@
       <div id="error" class="error" style="display:none"></div>
     </div>
     <div id="success-view" style="display:none">
-      <div class="checkmark"><svg viewBox="0 0 24 24"><polyline points="4 12 10 18 20 6"/></svg></div>
       <img id="institution-logo" class="institution-logo" style="display:none" alt="">
-      <h1 class="success" id="success-title">Account Connected</h1>
+      <h1 class="success" id="success-title"><svg class="success-title-check" viewBox="0 0 24 24"><polyline points="4 12 10 18 20 6"/></svg>Account Connected</h1>
       <p>Syncing transactions. Data stays on your machine. You can close this page.</p>
     </div>
   </div>
   <div class="trust">
     <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-    <span>End-to-end encrypted</span>
+    <span>Secured by Plaid</span>
   </div>
 
   <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
@@ -152,7 +143,8 @@
         linkHandler = Plaid.create({
           token: link_token,
           onSuccess: async (publicToken, metadata) => {
-            document.getElementById('connect-view').innerHTML = '<div class="spinner"></div><h1>Linking</h1><p>Exchanging credentials...</p>';
+            document.getElementById('connect-view').innerHTML = '<div class="spinner"></div><h1>Linking</h1><p>Syncing ' + (metadata.institution?.name || 'account') + '...</p>';
+            document.getElementById('connect-view').style.display = 'block';
             try {
               const resp = await fetch('/api/exchange', {
                 method: 'POST',
@@ -170,7 +162,8 @@
               document.getElementById('success-view').style.display = 'block';
               const instName = result.institution_name || metadata.institution?.name;
               if (instName) {
-                document.getElementById('success-title').textContent = instName + ' Connected';
+                const titleEl = document.getElementById('success-title');
+                titleEl.innerHTML = titleEl.querySelector('svg').outerHTML + instName + ' Connected';
               }
               if (result.institution_logo) {
                 const logoEl = document.getElementById('institution-logo');
