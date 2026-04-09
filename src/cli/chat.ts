@@ -7,7 +7,33 @@ import type { ProgressCallback } from "../ai/agent.js";
 function rawReadLine(prompt: string, belowLines: string[]): Promise<string> {
   return new Promise((resolve) => {
     let buf = "";
+    let cursor = 0; // cursor position within buf
     const out = process.stdout;
+    const promptLen = stripAnsi(prompt).length;
+
+    // Redraws the buffer from the prompt onward and repositions the cursor
+    const redraw = () => {
+      out.write("\r" + prompt + buf + "\x1b[K"); // clear to end of line
+      // Move cursor back to the correct position
+      const back = buf.length - cursor;
+      if (back > 0) out.write(`\x1b[${back}D`);
+    };
+
+    // Find the start of the previous word boundary
+    const wordLeft = () => {
+      let p = cursor;
+      while (p > 0 && buf[p - 1] === " ") p--;       // skip trailing spaces
+      while (p > 0 && buf[p - 1] !== " ") p--;        // skip word chars
+      return p;
+    };
+
+    // Find the end of the next word boundary
+    const wordRight = () => {
+      let p = cursor;
+      while (p < buf.length && buf[p] !== " ") p++;   // skip word chars
+      while (p < buf.length && buf[p] === " ") p++;    // skip trailing spaces
+      return p;
+    };
 
     // Render: prompt on current line, then content below, then move cursor back
     out.write(prompt);
@@ -40,9 +66,49 @@ function rawReadLine(prompt: string, belowLines: string[]): Promise<string> {
           return;
         }
 
+        // Ctrl+A — beginning of line
+        if (code === 1) {
+          if (cursor > 0) { out.write(`\x1b[${cursor}D`); cursor = 0; }
+          continue;
+        }
+
+        // Ctrl+E — end of line
+        if (code === 5) {
+          if (cursor < buf.length) { out.write(`\x1b[${buf.length - cursor}C`); cursor = buf.length; }
+          continue;
+        }
+
+        // Ctrl+K — delete from cursor to end of line
+        if (code === 11) {
+          buf = buf.slice(0, cursor);
+          out.write("\x1b[K");
+          continue;
+        }
+
+        // Ctrl+U — delete from cursor to beginning of line
+        if (code === 21) {
+          buf = buf.slice(cursor);
+          cursor = 0;
+          redraw();
+          continue;
+        }
+
+        // Ctrl+W — delete word backward
+        if (code === 23) {
+          if (cursor > 0) {
+            const target = wordLeft();
+            buf = buf.slice(0, target) + buf.slice(cursor);
+            cursor = target;
+            redraw();
+          }
+          continue;
+        }
+
         // Enter
         if (code === 13) {
           cleanup();
+          // Move cursor to end of buf first
+          if (cursor < buf.length) out.write(`\x1b[${buf.length - cursor}C`);
           // Move past the below-content lines, then newline
           for (let j = 0; j < belowLines.length; j++) out.write("\x1b[1B");
           out.write("\n");
@@ -52,32 +118,117 @@ function rawReadLine(prompt: string, belowLines: string[]): Promise<string> {
 
         // Backspace
         if (code === 127 || code === 8) {
-          if (buf.length > 0) {
-            buf = buf.slice(0, -1);
-            out.write("\b \b");
+          if (cursor > 0) {
+            buf = buf.slice(0, cursor - 1) + buf.slice(cursor);
+            cursor--;
+            redraw();
           }
           continue;
         }
 
-        // Skip escape sequences (arrow keys etc.)
+        // Escape sequences (arrow keys, Option+key, etc.)
         if (code === 27) {
+          // Option+Backspace — ESC followed by DEL (0x7f)
+          if (i + 1 < chunk.length && chunk.charCodeAt(i + 1) === 127) {
+            i++; // consume the DEL
+            if (cursor > 0) {
+              const target = wordLeft();
+              buf = buf.slice(0, target) + buf.slice(cursor);
+              cursor = target;
+              redraw();
+            }
+            continue;
+          }
+
+          // Option+b / Option+f — ESC followed by 'b' or 'f'
+          if (i + 1 < chunk.length && chunk[i + 1] === "b") {
+            i++;
+            const target = wordLeft();
+            if (target < cursor) { out.write(`\x1b[${cursor - target}D`); cursor = target; }
+            continue;
+          }
+          if (i + 1 < chunk.length && chunk[i + 1] === "f") {
+            i++;
+            const target = wordRight();
+            if (target > cursor) { out.write(`\x1b[${target - cursor}C`); cursor = target; }
+            continue;
+          }
+
           if (i + 1 < chunk.length && chunk[i + 1] === "[") {
-            i += 2;
-            while (i < chunk.length && chunk.charCodeAt(i) < 64) i++;
+            i += 2; // skip past ESC [
+            // Collect any intermediate bytes (modifiers like "1;3")
+            let seq = "";
+            while (i < chunk.length && chunk.charCodeAt(i) < 64) {
+              seq += chunk[i];
+              i++;
+            }
+            if (i < chunk.length) {
+              const final = chunk[i];
+              // Modifier keys: ;3 = Option, ;5 = Ctrl, ;9 = Cmd (Kitty protocol)
+              const isWordMod = seq === "1;3" || seq === "1;5" || seq === "1;9";
+              const isCmd = seq === "1;9";
+
+              if (final === "D") {
+                if (isWordMod) {
+                  // Option/Ctrl/Cmd+Left — word backward
+                  const target = wordLeft();
+                  if (target < cursor) { out.write(`\x1b[${cursor - target}D`); cursor = target; }
+                } else if (cursor > 0) {
+                  cursor--; out.write("\x1b[D");
+                }
+              } else if (final === "C") {
+                if (isWordMod) {
+                  // Option/Ctrl/Cmd+Right — word forward
+                  const target = wordRight();
+                  if (target > cursor) { out.write(`\x1b[${target - cursor}C`); cursor = target; }
+                } else if (cursor < buf.length) {
+                  cursor++; out.write("\x1b[C");
+                }
+              } else if (final === "H") {
+                // Home
+                if (cursor > 0) { out.write(`\x1b[${cursor}D`); cursor = 0; }
+              } else if (final === "F") {
+                // End
+                if (cursor < buf.length) { out.write(`\x1b[${buf.length - cursor}C`); cursor = buf.length; }
+              } else if (final === "u") {
+                // Kitty keyboard protocol: ESC [ codepoint ; modifier u
+                const parts = seq.split(";");
+                const codepoint = parseInt(parts[0], 10);
+                const mod = parts.length > 1 ? parseInt(parts[1], 10) : 1;
+                const hasCmd = (mod - 1) & 8;   // super/cmd bit
+                const hasCtrl = (mod - 1) & 4;  // ctrl bit
+
+                if (codepoint === 127 && (hasCmd || hasCtrl)) {
+                  // Cmd+Backspace / Ctrl+Backspace — delete to line start
+                  if (cursor > 0) {
+                    buf = buf.slice(cursor);
+                    cursor = 0;
+                    redraw();
+                  }
+                }
+              }
+              // Ignore other sequences (up/down, etc.)
+            }
           }
           continue;
         }
 
         // Printable characters
         if (code >= 32) {
-          buf += chunk[i];
-          out.write(chunk[i]);
+          buf = buf.slice(0, cursor) + chunk[i] + buf.slice(cursor);
+          cursor++;
+          redraw();
         }
       }
     };
 
     process.stdin.on("data", onData);
   });
+}
+
+/** Strip ANSI escape codes to get visible length */
+function stripAnsi(str: string): string {
+  return str.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
 const THINKING_PHRASES = [
