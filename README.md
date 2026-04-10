@@ -81,7 +81,7 @@ ray setup
 
 The setup wizard offers two modes:
 
-### Quick setup (managed)
+### Pro (quick setup)
 
 We handle the API keys. Your data stays local. $10/mo.
 
@@ -90,7 +90,7 @@ We handle the API keys. Your data stays local. $10/mo.
 3. Link your accounts — checking, savings, credit cards, investments, loans, mortgage
 4. Done — daily sync auto-scheduled at 6am
 
-### Self-hosted
+### Bring your own keys
 
 Bring your own Anthropic and Plaid credentials. Free forever.
 
