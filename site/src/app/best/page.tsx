@@ -38,7 +38,7 @@ export default function BestPage() {
             <Link
               key={page.slug}
               href={`/best/${page.slug}`}
-              className="group rounded-xl border border-sand-200 bg-white p-6 transition-colors hover:border-stone-300"
+              className="group rounded-xl border border-stone-200 bg-white p-6 transition-colors hover:border-stone-300"
             >
               <p className="font-mono text-xs tracking-wide text-stone-400 uppercase">
                 {page.category}

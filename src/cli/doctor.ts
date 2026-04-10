@@ -140,7 +140,7 @@ export async function runDoctor(): Promise<void> {
   if (existsSync(completionPath)) {
     checks.push({ label: "Shell completions", status: "ok", detail: completionPath });
   } else {
-    checks.push({ label: "Shell completions", status: "warn", detail: `Not installed. Run ${chalk.bold("ray completions")}` });
+    checks.push({ label: "Shell completions", status: "warn", detail: "Not installed" });
   }
 
   // ── Node version ──

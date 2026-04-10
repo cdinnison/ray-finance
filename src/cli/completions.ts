@@ -58,12 +58,13 @@ const COMMANDS = [
   { name: "goals", desc: "Show financial goals" },
   { name: "score", desc: "Show daily financial score and streaks" },
   { name: "alerts", desc: "Show financial alerts" },
+  { name: "bills", desc: "Show upcoming bills" },
+  { name: "recap", desc: "Monthly spending recap" },
   { name: "export", desc: "Export data to a backup file" },
   { name: "import", desc: "Restore data from a backup file" },
   { name: "billing", desc: "Manage your Ray subscription" },
   { name: "update", desc: "Update Ray to the latest version" },
   { name: "doctor", desc: "Check system health" },
-  { name: "completions", desc: "Install shell completions" },
 ];
 
 const SPENDING_PERIODS = ["this_month", "last_month", "last_30", "last_90"];

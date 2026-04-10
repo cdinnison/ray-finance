@@ -160,7 +160,7 @@ export const comparisons: ComparisonPage[] = [
     type: "vs",
     title: "Ray vs Copilot Money",
     heroSubtitle:
-      "Copilot Money is a sleek $10.99/mo iOS finance app. Ray is an open-source CLI with AI advice. Both connect to your bank — but the approach couldn't be more different.",
+      "Copilot Money is a sleek $13/mo iOS finance app. Ray is an open-source CLI with AI advice. Both connect to your bank — but the approach couldn't be more different.",
     competitor: {
       name: "Copilot Money",
       description:
@@ -173,13 +173,13 @@ export const comparisons: ComparisonPage[] = [
         "Investment tracking included",
       ],
       cons: [
-        "$10.99/month — no free tier",
+        "$13/month — no free tier",
         "iOS/Mac only — no Android or web",
         "No AI-powered advice or Q&A",
         "Closed source, cloud-based",
         "Limited debt planning tools",
       ],
-      pricing: "$10.99/month",
+      pricing: "$13/month",
     },
     rayAdvantages: [
       {
@@ -200,7 +200,7 @@ export const comparisons: ComparisonPage[] = [
       {
         title: "Free self-hosted option",
         description:
-          "Copilot costs $10.99/mo with no free tier. Ray is completely free to self-host, or $10/mo managed — still cheaper than Copilot.",
+          "Copilot costs $13/mo with no free tier. Ray is completely free to self-host, or $10/mo managed — still cheaper than Copilot.",
       },
     ],
     comparisonTable: [
@@ -208,7 +208,7 @@ export const comparisons: ComparisonPage[] = [
       { feature: "Bank sync", ray: "Yes (Plaid)", competitor: "Yes (Plaid)" },
       { feature: "Data storage", ray: "Local only (encrypted)", competitor: "Cloud (Copilot servers)" },
       { feature: "Open source", ray: "Yes (MIT)", competitor: "No" },
-      { feature: "Pricing", ray: "$0 self-hosted / $10/mo managed", competitor: "$10.99/mo" },
+      { feature: "Pricing", ray: "$0 self-hosted / $10/mo managed", competitor: "$13/mo" },
       { feature: "Privacy", ray: "No cloud storage, PII-masked AI calls", competitor: "Data synced to Copilot servers" },
       { feature: "Mobile app", ray: "No (CLI-based)", competitor: "Yes (excellent iOS app)" },
       { feature: "Budgeting", ray: "AI-assisted budget tracking", competitor: "Smart spending limits" },
@@ -227,7 +227,7 @@ export const comparisons: ComparisonPage[] = [
     type: "vs",
     title: "Ray vs Monarch Money",
     heroSubtitle:
-      "Monarch Money is a $9.99/mo web and mobile finance dashboard built as the modern Mint replacement. Ray takes a different approach: AI-first, local-first, open source.",
+      "Monarch Money is a $14.99/mo web and mobile finance dashboard built as the modern Mint replacement. Ray takes a different approach: AI-first, local-first, open source.",
     competitor: {
       name: "Monarch Money",
       description:
@@ -240,13 +240,13 @@ export const comparisons: ComparisonPage[] = [
         "Good transaction categorization",
       ],
       cons: [
-        "$9.99/month — no free tier",
+        "$14.99/month — no free tier",
         "No AI-powered advice",
         "Closed source, cloud-based",
         "Data stored on Monarch's servers",
         "Limited debt payoff tools",
       ],
-      pricing: "$9.99/month ($99.99/year)",
+      pricing: "$14.99/month ($99.99/year)",
     },
     rayAdvantages: [
       {
@@ -262,7 +262,7 @@ export const comparisons: ComparisonPage[] = [
       {
         title: "Free or cheaper",
         description:
-          "Monarch is $9.99/mo with no free option. Ray is free to self-host, or $10/mo for the managed setup — same price but with AI included.",
+          "Monarch is $14.99/mo with no free option. Ray is free to self-host, or $10/mo for the managed setup — same price but with AI included.",
       },
       {
         title: "Open source transparency",
@@ -275,7 +275,7 @@ export const comparisons: ComparisonPage[] = [
       { feature: "Bank sync", ray: "Yes (Plaid)", competitor: "Yes (Plaid/MX)" },
       { feature: "Data storage", ray: "Local only (encrypted)", competitor: "Cloud (Monarch servers)" },
       { feature: "Open source", ray: "Yes (MIT)", competitor: "No" },
-      { feature: "Pricing", ray: "$0 self-hosted / $10/mo managed", competitor: "$9.99/mo or $99.99/yr" },
+      { feature: "Pricing", ray: "$0 self-hosted / $10/mo managed", competitor: "$14.99/mo or $99.99/yr" },
       { feature: "Privacy", ray: "No cloud storage, PII-masked AI calls", competitor: "Data stored on Monarch servers" },
       { feature: "Mobile app", ray: "No (CLI-based)", competitor: "Yes (iOS/Android + web)" },
       { feature: "Budgeting", ray: "AI-assisted budget tracking", competitor: "Category budgets with rollover" },
@@ -490,6 +490,74 @@ export const comparisons: ComparisonPage[] = [
     metaTitle: "Best YNAB Alternative (2025) — Ray: AI Financial Advisor for $0-$10/mo",
     metaDescription:
       "Looking for a YNAB alternative? Ray is an AI-powered financial advisor that costs $0-$10/mo. No envelope budgeting — just ask questions and get answers from your real data.",
+  },
+  {
+    slug: "ray-vs-tiller",
+    type: "vs",
+    title: "Ray vs Tiller",
+    heroSubtitle:
+      "Tiller pulls your bank data into Google Sheets or Excel. Ray pulls it into an AI advisor. Both give you more control than a typical app — but the workflow is completely different.",
+    competitor: {
+      name: "Tiller",
+      description:
+        "Tiller Money is a service that automatically syncs your bank transactions into Google Sheets or Microsoft Excel. It gives you full control over your financial data in a spreadsheet format, with customizable templates for budgeting, net worth tracking, and more.",
+      pros: [
+        "Full spreadsheet flexibility — build anything",
+        "Automatic bank sync into Google Sheets or Excel",
+        "Good templates for budgeting and net worth",
+        "Your data lives in your own spreadsheet",
+        "Works with any spreadsheet formula or add-on",
+      ],
+      cons: [
+        "$79/year — not cheap for a data sync",
+        "You do all the analysis yourself",
+        "Requires spreadsheet skills to get real value",
+        "No AI-powered advice or insights",
+        "Maintenance-heavy — formulas break, templates need updating",
+        "Data lives in Google's cloud (if using Sheets)",
+      ],
+      pricing: "$79/year",
+    },
+    rayAdvantages: [
+      {
+        title: "AI does the analysis for you",
+        description:
+          "Tiller gives you raw data in a spreadsheet. You write the formulas, build the charts, and interpret the results. Ray does all of that automatically — just ask a question and get an answer.",
+      },
+      {
+        title: "No spreadsheet maintenance",
+        description:
+          "Tiller users spend hours building and maintaining their financial spreadsheets. Formulas break, templates need updating, and the system only works if you keep investing time. Ray works out of the box with no maintenance.",
+      },
+      {
+        title: "Actually local-first",
+        description:
+          "Tiller syncs your bank data to Google Sheets — which means your financial history lives on Google's servers. Ray keeps everything in an encrypted database on your machine. No cloud, no third-party storage.",
+      },
+      {
+        title: "Ask questions in plain English",
+        description:
+          "With Tiller, getting an answer means writing a formula or building a pivot table. With Ray, you type \"how much did I spend on groceries in Q1?\" and get an instant answer from your real data.",
+      },
+    ],
+    comparisonTable: [
+      { feature: "AI financial advice", ray: "Yes — conversational AI advisor", competitor: "No" },
+      { feature: "Bank sync", ray: "Yes (Plaid)", competitor: "Yes (Plaid into Sheets/Excel)" },
+      { feature: "Data storage", ray: "Local only (encrypted)", competitor: "Google Sheets or Excel (cloud)" },
+      { feature: "Open source", ray: "Yes (MIT)", competitor: "No" },
+      { feature: "Pricing", ray: "$0 free / $10/mo managed", competitor: "$79/year" },
+      { feature: "Privacy", ray: "No cloud storage, PII-masked AI calls", competitor: "Data in Google/Microsoft cloud" },
+      { feature: "Analysis", ray: "AI-powered — ask questions in plain English", competitor: "Manual — you build formulas and charts" },
+      { feature: "Setup effort", ray: "Install and connect bank (~5 min)", competitor: "Set up templates, learn spreadsheet workflow" },
+      { feature: "Investment tracking", ray: "Yes — holdings, gains, cost basis", competitor: "Manual (build your own sheet)" },
+      { feature: "Debt payoff planning", ray: "Yes — avalanche/snowball simulations", competitor: "Manual (build your own sheet)" },
+    ],
+    verdict:
+      "Tiller is a good product for people who genuinely love spreadsheets. If you want complete control over your financial data and enjoy building custom formulas, Tiller gives you that power. The bank sync is solid and the templates are a decent starting point.\n\nBut Tiller's core assumption is that you want to be the analyst. You write the formulas, you build the dashboards, you maintain the system. For most people, that means Tiller starts strong and slowly gets abandoned as life gets busy.\n\nRay takes the opposite approach. You don't build anything — you just ask questions. \"Am I on track to save $10k?\" \"What's my monthly burn rate?\" \"Can I afford this trip?\" Ray queries your actual bank data, runs the math, and gives you a direct answer. No formulas, no maintenance.\n\nThe tradeoff: Tiller gives you infinite flexibility in a spreadsheet. Ray gives you none of that — it's a CLI tool, not a canvas. But if you've ever built a beautiful financial spreadsheet and then stopped looking at it two months later, Ray might be the tool that actually sticks.",
+    relatedComparisons: ["ray-vs-spreadsheets", "ray-vs-monarch", "ray-vs-ynab"],
+    metaTitle: "Ray vs Tiller — AI Financial Advisor vs Spreadsheet Sync",
+    metaDescription:
+      "Compare Ray's AI-powered financial advisor to Tiller's spreadsheet approach. Stop building formulas — just ask questions and get answers from your real bank data.",
   },
 ];
 

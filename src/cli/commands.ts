@@ -3,6 +3,7 @@ import { getDb } from "../db/connection.js";
 import {
   getNetWorth, getAccountBalances, getTransactionsFiltered,
   getBudgetStatuses, getGoals, getCashFlowThisMonth,
+  compareSpending, getNetWorthTrend,
   formatMoney as rawFormatMoney, categoryLabel,
 } from "../queries/index.js";
 import { getLatestScore, getAchievements, getMonthlySavings } from "../scoring/index.js";
@@ -447,5 +448,176 @@ export function showAlerts(): void {
     const icon = a.severity === "critical" ? chalk.red("●") : a.severity === "warning" ? chalk.yellow("●") : chalk.blue("●");
     console.log(`  ${icon} ${a.message}`);
   }
+  console.log();
+}
+
+export function showBills(days = 7): void {
+  const db = getDb();
+  const now = new Date();
+  const todayDay = now.getDate();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+
+  const endDay = todayDay + days;
+
+  type Bill = { name: string; amount: number; day_of_month: number };
+  let bills: Bill[] = [];
+
+  if (endDay <= daysInMonth) {
+    bills = db.prepare(
+      `SELECT name, amount, day_of_month FROM recurring_bills WHERE day_of_month BETWEEN ? AND ? ORDER BY day_of_month`
+    ).all(todayDay + 1, endDay) as Bill[];
+  } else {
+    // Wraparound into next month
+    const thisMonth = db.prepare(
+      `SELECT name, amount, day_of_month FROM recurring_bills WHERE day_of_month BETWEEN ? AND ? ORDER BY day_of_month`
+    ).all(todayDay + 1, daysInMonth) as Bill[];
+    const nextMonth = db.prepare(
+      `SELECT name, amount, day_of_month FROM recurring_bills WHERE day_of_month BETWEEN 1 AND ? ORDER BY day_of_month`
+    ).all(endDay - daysInMonth) as Bill[];
+    bills = [...thisMonth, ...nextMonth];
+  }
+
+  if (bills.length === 0) {
+    console.log(`\nNo upcoming bills in the next ${days} days.`);
+    return;
+  }
+
+  console.log(`\n${heading("Upcoming Bills")} ${dim(`next ${days} days`)}\n`);
+
+  const maxName = Math.max(...bills.map(b => b.name.length));
+  let total = 0;
+
+  for (const b of bills) {
+    // Calculate the actual date for this bill
+    let billDate: Date;
+    if (b.day_of_month > todayDay) {
+      billDate = new Date(now.getFullYear(), now.getMonth(), b.day_of_month);
+    } else {
+      billDate = new Date(now.getFullYear(), now.getMonth() + 1, b.day_of_month);
+    }
+    const dateStr = billDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+    console.log(`  ${dim(dateStr.padEnd(8))}${b.name.padEnd(maxName + 2)}${rawFormatMoney(b.amount).padStart(10)}`);
+    total += b.amount;
+  }
+
+  console.log(`\n  ${dim("Total due:".padEnd(maxName + 10))}${chalk.bold(rawFormatMoney(total))}`);
+  console.log();
+}
+
+export function showRecap(period = "last_month"): void {
+  const db = getDb();
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+
+  let start: string, end: string, label: string;
+  let prevStart: string, prevEnd: string;
+
+  if (period === "this_month") {
+    start = new Date(y, m, 1).toISOString().slice(0, 10);
+    end = now.toISOString().slice(0, 10);
+    label = now.toLocaleDateString("en-US", { month: "long", year: "numeric" }) + " (so far)";
+    prevStart = new Date(y, m - 1, 1).toISOString().slice(0, 10);
+    prevEnd = new Date(y, m, 0).toISOString().slice(0, 10);
+  } else {
+    // last_month
+    start = new Date(y, m - 1, 1).toISOString().slice(0, 10);
+    end = new Date(y, m, 0).toISOString().slice(0, 10);
+    const lastMonth = new Date(y, m - 1, 1);
+    label = lastMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+    prevStart = new Date(y, m - 2, 1).toISOString().slice(0, 10);
+    prevEnd = new Date(y, m - 1, 0).toISOString().slice(0, 10);
+  }
+
+  // Spending this period
+  const spending = db.prepare(
+    `SELECT SUM(amount) as total, COUNT(*) as count FROM transactions
+     WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
+     AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')`
+  ).get(start, end) as { total: number | null; count: number };
+
+  // Income this period
+  const income = db.prepare(
+    `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+     WHERE amount < 0 AND date BETWEEN ? AND ? AND pending = 0
+     AND category NOT IN ('TRANSFER_IN')`
+  ).get(start, end) as { total: number };
+
+  const totalSpent = spending.total || 0;
+  const txnCount = spending.count || 0;
+
+  if (txnCount === 0) {
+    console.log(`\nNo transaction data for ${label}.`);
+    return;
+  }
+
+  console.log(`\n${heading("Recap")} ${dim(label)}\n`);
+
+  // ── Spending summary with comparison ──
+  const cmp = compareSpending(db, prevStart, prevEnd, start, end);
+  let spendLine = `  Spent ${chalk.bold(rawFormatMoney(totalSpent))} across ${txnCount} transactions`;
+  if (cmp.period1Total > 0) {
+    const pct = Math.abs(cmp.pctChange);
+    const dir = cmp.pctChange <= 0 ? chalk.green(`${pct}% less`) : chalk.red(`${pct}% more`);
+    spendLine += ` — ${dir} than prior month`;
+  }
+  console.log(spendLine);
+
+  // ── Income ──
+  if (income.total > 0) {
+    const net = income.total - totalSpent;
+    const savingsRate = Math.round((net / income.total) * 100);
+    console.log(`  Earned ${chalk.bold(rawFormatMoney(income.total))}  Net: ${formatMoneyColored(net)}  ${dim(`(${savingsRate}% savings rate)`)}`);
+  }
+
+  // ── Biggest movers ──
+  const movers = cmp.categories.filter(c => Math.abs(c.diff) >= 10).slice(0, 3);
+  if (movers.length > 0) {
+    console.log(`\n  ${heading("Biggest Movers")}`);
+    for (const mv of movers) {
+      const arrow = mv.diff > 0 ? chalk.red("↑") : chalk.green("↓");
+      const diffStr = mv.diff > 0 ? chalk.red("+" + rawFormatMoney(mv.diff)) : chalk.green("-" + rawFormatMoney(Math.abs(mv.diff)));
+      console.log(`    ${arrow} ${categoryLabel(mv.category).padEnd(18)} ${rawFormatMoney(mv.period2).padStart(10)}  ${diffStr}`);
+    }
+  }
+
+  // ── Top categories ──
+  const topCats = db.prepare(
+    `SELECT category, SUM(amount) as total FROM transactions
+     WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
+     AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')
+     GROUP BY category ORDER BY total DESC LIMIT 5`
+  ).all(start, end) as { category: string; total: number }[];
+
+  if (topCats.length > 0) {
+    console.log(`\n  ${heading("Top Categories")}`);
+    for (const c of topCats) {
+      const pct = Math.round((c.total / totalSpent) * 100);
+      console.log(`    ${categoryLabel(c.category).padEnd(18)} ${rawFormatMoney(c.total).padStart(10)}  ${dim(`${pct}%`)}`);
+    }
+  }
+
+  // ── Net worth change over the period ──
+  const nwTrend = getNetWorthTrend(db, 60);
+  const nwAtStart = nwTrend.find(d => d.date >= start);
+  const nwAtEnd = [...nwTrend].reverse().find(d => d.date <= end);
+  if (nwAtStart && nwAtEnd) {
+    const nwChange = nwAtEnd.net_worth - nwAtStart.net_worth;
+    const arrow = nwChange >= 0 ? chalk.green("↑") : chalk.red("↓");
+    console.log(`\n  ${heading("Net Worth")}`);
+    console.log(`    ${rawFormatMoney(nwAtStart.net_worth)} → ${chalk.bold(rawFormatMoney(nwAtEnd.net_worth))}  ${arrow} ${formatMoneyColored(nwChange)}`);
+  }
+
+  // ── Goals progress ──
+  const goals = getGoals(db);
+  const activeGoals = goals.filter(g => g.progress_pct < 100);
+  if (activeGoals.length > 0) {
+    console.log(`\n  ${heading("Goals")}`);
+    for (const g of activeGoals) {
+      console.log(`    ${g.name.padEnd(20)} ${progressBar(g.progress_pct, 12)}  ${dim(rawFormatMoney(g.current) + " / " + rawFormatMoney(g.target))}`);
+    }
+  }
+
   console.log();
 }

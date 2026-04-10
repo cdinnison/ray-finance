@@ -69,8 +69,8 @@ describe("categoryLabel", () => {
     expect(categoryLabel("FOOD_AND_DRINK")).toBe("Food & Drink");
     expect(categoryLabel("ENTERTAINMENT")).toBe("Entertainment");
   });
-  it("returns raw value for unknown", () => {
-    expect(categoryLabel("CUSTOM_CAT")).toBe("CUSTOM_CAT");
+  it("title-cases unknown categories", () => {
+    expect(categoryLabel("CUSTOM_CAT")).toBe("Custom Cat");
   });
 });
 

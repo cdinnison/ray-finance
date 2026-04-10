@@ -211,7 +211,7 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
         ).run(rule.target_category, rule.match_pattern, rule.target_category);
 
     if (result.changes > 0) {
-      console.log(`  Recategorized ${result.changes} txn(s): ${rule.label}`);
+      console.log(`  Recategorized ${result.changes} txn(s): ${rule.label || rule.match_pattern}`);
       totalRecat += result.changes;
     }
   }

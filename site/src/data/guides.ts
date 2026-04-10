@@ -34,7 +34,7 @@ export const guides: Guide[] = [
         body: "Run `ray setup` and paste your key when prompted. Ray stores it locally in an encrypted config file — it never leaves your machine.",
       },
     ],
-    tip: "If you don't want to manage your own API key, the $10/mo Ray Hosted Keys plan includes AI access. Just run `ray setup`, pick \"Ray API Key\", and pay $10/mo — no Anthropic account needed.",
+    tip: "If you don't want to manage your own API key, the $10/mo Ray Pro plan includes AI access. Just run `ray setup`, pick \"Ray Pro\", and pay $10/mo — no Anthropic account needed.",
     relatedGuides: ["get-plaid-credentials"],
     metaTitle: "How to Get an Anthropic API Key for Ray | Ray Finance",
     metaDescription:
@@ -70,11 +70,48 @@ export const guides: Guide[] = [
         body: "Run `ray link` to open Plaid Link in your browser. Pick your bank, log in, and select the accounts you want Ray to track. Done.",
       },
     ],
-    tip: "Don't want to wait for Plaid approval? The $10/mo Ray Hosted Keys plan includes bank access. Run `ray setup`, pick \"Ray API Key\", and pay $10/mo — then `ray link` to connect your bank immediately. No Plaid account needed.",
+    tip: "Don't want to wait for Plaid approval? The $10/mo Ray Pro plan includes bank access. Run `ray setup`, pick \"Ray Pro\", and pay $10/mo — then `ray link` to connect your bank immediately. No Plaid account needed.",
     relatedGuides: ["get-anthropic-api-key"],
     metaTitle: "How to Get Plaid Credentials for Ray | Ray Finance",
     metaDescription:
       "Step-by-step guide to getting Plaid API credentials for Ray. Create a developer account, apply for production access, and connect your bank.",
+  },
+  {
+    slug: "why-local-first",
+    title: "Why local-first matters for personal finance",
+    subtitle:
+      "Most finance apps store your bank data on their servers. Ray keeps everything on your machine. Here's why that matters and how it works.",
+    steps: [
+      {
+        title: "Your financial data is uniquely sensitive",
+        body: "Your bank transactions reveal where you live, where you shop, what you earn, who you pay, and what you're planning. This data is more intimate than your browsing history. When a finance app stores it on their servers, you're trusting that company with a complete map of your financial life — and hoping they never get breached, acquired, or shut down.",
+      },
+      {
+        title: "Cloud finance apps create unnecessary risk",
+        body: "Every cloud-hosted budgeting app is a target. Mint had 3.6 million users' data on Intuit's servers before it shut down in 2024. When you use Monarch, Copilot, or YNAB, your transaction history lives on their infrastructure — subject to their security practices, their privacy policies, and their business decisions. If they get hacked, your data is exposed. If they shut down, your data may be lost.",
+      },
+      {
+        title: "Local-first means you control your data",
+        body: "Ray stores your financial data in an encrypted SQLite database at ~/.ray on your machine. It never leaves your computer. There's no cloud account, no server to breach, and no company that can lose your data. If Ray the project disappeared tomorrow, your data would still be right where you left it — on your hard drive, encrypted and accessible.",
+      },
+      {
+        title: "But Ray still connects to your bank",
+        body: "Local-first doesn't mean disconnected. Ray uses Plaid to sync your transactions and balances — the same secure connection used by Monarch, Copilot, and every other finance app. The difference is where that data goes after syncing: with Ray, it goes straight to your encrypted local database. With cloud apps, it goes to their servers.",
+      },
+      {
+        title: "AI queries are PII-masked",
+        body: "When Ray sends a question to Claude (the AI), it strips personally identifiable information first. Your name, account numbers, and institution names are replaced with generic labels. The AI sees \"Account A at Bank 1\" — not your actual Chase checking account. The full data stays local; only anonymized context reaches the AI.",
+      },
+      {
+        title: "Open source means fully auditable",
+        body: "Ray is MIT licensed and fully open source. You can read every line of code, verify what data is sent where, and confirm that nothing is phoning home. You can't do this with Monarch, Copilot, or any closed-source finance app. If privacy matters to you, verifiability matters — and open source is the only way to get it.",
+      },
+    ],
+    tip: "If you want local-first privacy without managing your own API keys, the $10/mo Ray Pro plan still keeps all financial data on your machine. The only difference is that Ray Pro routes AI calls through our proxy (still PII-masked) so you don't need your own Anthropic or Plaid accounts.",
+    relatedGuides: ["get-anthropic-api-key", "get-plaid-credentials"],
+    metaTitle: "Why Local-First Matters for Personal Finance | Ray Finance",
+    metaDescription:
+      "Why your financial data should stay on your machine. How Ray keeps bank data local with AES-256 encryption, PII-masked AI calls, and zero cloud storage.",
   },
 ];
 

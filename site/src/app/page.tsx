@@ -3,7 +3,6 @@ import { TerminalDemo } from "./terminal-demo";
 import { PIIScramble } from "./pii-scramble";
 import { Reveal } from "./reveal";
 import { Nav } from "@/components/nav";
-import { GitHubStars } from "@/components/github-stars";
 
 const jsonLd = {
   "@context": "https://schema.org",
@@ -12,6 +11,7 @@ const jsonLd = {
   description:
     "An open-source CLI that connects to your bank and gives you AI-powered financial advice — all running locally on your machine.",
   applicationCategory: "FinanceApplication",
+  applicationSubCategory: "AI Financial Advisor",
   operatingSystem: "macOS, Linux, Windows",
   url: "https://rayfinance.app",
   offers: [
@@ -29,6 +29,65 @@ const jsonLd = {
     },
   ],
   license: "https://opensource.org/licenses/MIT",
+  featureList: [
+    "AI-powered financial advice from real bank data",
+    "Local-first — all data stays on your machine",
+    "Connects to 12,000+ banks via Plaid",
+    "Open source (MIT licensed)",
+    "PII-masked AI queries",
+    "Spending analysis and budget tracking",
+    "Net worth tracking across all accounts",
+    "Debt payoff planning",
+    "Cash flow projection",
+    "Financial goal tracking",
+  ],
+};
+
+const faqItems = [
+  {
+    question: "What does Ray do?",
+    answer:
+      "Ray is an AI financial advisor that connects to your bank accounts via Plaid and gives personalized advice based on your real transactions, balances, and goals. Instead of showing you dashboards and charts, Ray answers questions like \"can I afford this trip?\" and \"should I pay off debt or invest?\" using your actual financial data. It also learns and remembers your situation over time — your goals, your family, your career, your priorities — so the advice gets better the more you use it.",
+  },
+  {
+    question: "How does Ray keep my financial data private?",
+    answer:
+      "Ray runs entirely on your computer. Your financial data is stored in an encrypted SQLite database on your machine — there's no cloud account, no server, and no company storing your bank data. When Ray uses AI, it strips personally identifiable information before sending anything to the AI model. It's open source (MIT licensed) so you can verify this yourself.",
+  },
+  {
+    question: "How is Ray different from Monarch, Copilot, or YNAB?",
+    answer:
+      "Those apps sort your transactions into categories and show you dashboards. Ray takes a different approach: it's a conversational AI advisor that answers financial questions using your real data. Ask \"how many months of runway do I have?\" and Ray queries your actual bank data, runs the math, and gives you a direct answer. Ray also keeps all data local on your machine instead of on cloud servers, and can be self-hosted for free — because a tool that helps you manage your money shouldn't be another expense you have to budget for.",
+  },
+  {
+    question: "What can I ask Ray?",
+    answer:
+      "Anything about your finances. Example questions: \"Can I afford to take this trip?\", \"Am I on track to save $10k by December?\", \"What's my monthly burn rate?\", \"Did anything unusual hit my account this week?\", and \"How much should I set aside for quarterly taxes?\" Ray has 30+ tools that query your real financial data to give accurate answers.",
+    link: { href: "/prompts", text: "See more example prompts" },
+  },
+  {
+    question: "How much does Ray cost?",
+    answer:
+      "Ray has two plans. The free plan is fully open source (MIT licensed) — you install it with npm, bring your own Anthropic API key for AI and your own Plaid credentials for bank access. You pay Anthropic directly for AI usage, which is typically $1–3/month. The tradeoff is setup: Plaid production access requires a business entity, isn't guaranteed, and takes 1–2 weeks if approved. Ray Pro is $10/month and includes everything — AI and bank connectivity are built in, so you just install and connect your accounts in minutes. Both plans are the same app with the same features, and both keep all your financial data local on your machine. The only difference is whether you manage your own API keys or let Ray handle it.",
+  },
+  {
+    question: "Which banks does Ray work with?",
+    answer:
+      "Ray connects to 12,000+ financial institutions through Plaid — including Chase, Bank of America, Wells Fargo, Capital One, American Express, Fidelity, Schwab, Robinhood, Vanguard, SoFi, Ally, and thousands more. If your bank works with Plaid, it works with Ray.",
+  },
+];
+
+const faqJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faqItems.map((item) => ({
+    "@type": "Question",
+    name: item.question,
+    acceptedAnswer: {
+      "@type": "Answer",
+      text: item.answer,
+    },
+  })),
 };
 
 export default function Home() {
@@ -44,8 +103,13 @@ export default function Home() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }}
+      />
       <Nav />
       <Hero />
+      <SocialProof />
       <Terminal />
       <Reveal><Story /></Reveal>
       <HowItWorks />
@@ -54,11 +118,36 @@ export default function Home() {
       <Reveal><Context /></Reveal>
       <Reveal><Features /></Reveal>
       <Reveal><Pricing /></Reveal>
+      <Reveal><FAQ /></Reveal>
       <CTA />
     </main>
   );
 }
 
+
+/* ─── Npm Downloads ─── */
+async function NpmDownloads() {
+  let downloads: number | null = null;
+  try {
+    const res = await fetch("https://api.npmjs.org/downloads/point/last-month/ray-finance", {
+      next: { revalidate: 3600 },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      downloads = data.downloads ?? null;
+    }
+  } catch {}
+  if (!downloads) return null;
+
+  return (
+    <div className="animate-fade-up-delay-2 mt-6 flex items-center justify-center gap-1.5 text-sm text-stone-400">
+      <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+      </svg>
+      {downloads.toLocaleString()} installs this month
+    </div>
+  );
+}
 
 /* ─── Hero ─── */
 function Hero() {
@@ -77,18 +166,44 @@ function Hero() {
             className="rounded-lg bg-stone-900 px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-stone-900/20 transition-colors hover:bg-stone-800 [&>span:first-child]:text-stone-500"
           />
         </div>
-        <div className="animate-fade-up-delay-2 mt-10 flex h-5 flex-wrap items-center justify-center gap-x-8 gap-y-3 text-sm text-stone-400">
-          <span className="flex items-center gap-1.5">
-            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" /></svg>
-            Your data stays local
-          </span>
-          <span>AES-256 encrypted</span>
-          <span>MIT licensed</span>
-          <span>5 min setup</span>
-          <GitHubStars />
-        </div>
+        <NpmDownloads />
       </div>
     </section>
+  );
+}
+
+/* ─── Social Proof ─── */
+function SocialProof() {
+  return (
+    <div className="animate-fade-up-delay-2 flex items-center justify-center gap-8 px-6 -mb-4">
+      {/* 5-star reviews */}
+      <div className="flex flex-col items-center gap-1.5">
+        <div className="flex gap-0.5">
+          {[...Array(5)].map((_, i) => (
+            <svg key={i} className="h-5 w-5 text-amber-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+            </svg>
+          ))}
+        </div>
+        <p className="text-xs text-stone-400">Loved by users</p>
+      </div>
+
+      <div className="h-8 w-px bg-stone-200" />
+
+      {/* Open source */}
+      <a
+        href="https://github.com/cdinnison/ray-finance"
+        className="flex flex-col items-center gap-1.5 transition-colors hover:opacity-70"
+      >
+        <div className="flex items-center gap-1.5">
+          <svg className="h-5 w-5 text-stone-700" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd" />
+          </svg>
+          <span className="text-sm font-semibold text-stone-700">Open Source</span>
+        </div>
+        <p className="text-xs text-stone-400">MIT Licensed · Fully Auditable</p>
+      </a>
+    </div>
   );
 }
 
@@ -97,7 +212,7 @@ function Terminal() {
   return (
     <section className="px-6 -mt-9 py-16">
       <div className="mx-auto max-w-4xl">
-        <div className="overflow-hidden rounded-2xl border border-sand-200 bg-stone-950 shadow-2xl shadow-stone-900/10">
+        <div className="overflow-hidden rounded-2xl border border-stone-200 bg-stone-950 shadow-2xl shadow-stone-900/10">
           <TerminalDemo />
         </div>
       </div>
@@ -118,8 +233,9 @@ function Story() {
         <div className="mt-16 space-y-16">
           <StoryBlock
             label="The Apps"
+            icon={<svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><rect x="5" y="2" width="14" height="20" rx="2" /><path d="M12 18h.01" /></svg>}
             title="Dashboards show you what happened."
-            body="Mint, Copilot, Monarch — they sort your transactions into
+            body="Monarch, Copilot, YNAB — they sort your transactions into
               pie charts and send you notifications. They're good at showing
               you what you spent. They never tell you what to do about it.
               And when your subscription expires, so does your data."
@@ -127,15 +243,18 @@ function Story() {
 
           <StoryBlock
             label="The Spreadsheets"
-            title="Powerful when you keep them updated."
+            icon={<svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M3 15h18M9 3v18" /></svg>}
+            title="Powerful, but you still do all the work."
             body="You built the perfect spreadsheet once. Formulas, projections,
-              a debt payoff timeline. But it only works when you do — and
-              manual data entry doesn't survive a busy month.
-              You haven't opened it since February."
+              a debt payoff timeline. Even with Tiller syncing your data,
+              you're still the one analyzing it, updating formulas, and
+              deciding what it means. The spreadsheet never tells you
+              what to do next."
           />
 
           <div className="pl-8">
-            <p className="font-mono text-sm tracking-wide text-stone-400 uppercase">
+            <p className="flex items-center gap-2 font-mono text-sm tracking-wide text-stone-400 uppercase">
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="m4 17 6-6-6-6M12 19h8" /></svg>
               Then there&rsquo;s Ray
             </p>
             <h3 className="mt-3 text-2xl font-bold tracking-tight text-stone-950">
@@ -160,14 +279,17 @@ function StoryBlock({
   label,
   title,
   body,
+  icon,
 }: {
   label: string;
   title: string;
   body: string;
+  icon?: React.ReactNode;
 }) {
   return (
     <div className="pl-8">
-      <p className="font-mono text-sm tracking-wide text-stone-400 uppercase">
+      <p className="flex items-center gap-2 font-mono text-sm tracking-wide text-stone-400 uppercase">
+        {icon}
         {label}
       </p>
       <h3 className="mt-3 text-2xl font-bold tracking-tight text-stone-950">
@@ -211,7 +333,7 @@ function HowItWorks() {
           How it works
         </p>
 
-        <div className="mt-12 grid gap-px overflow-hidden rounded-2xl border border-sand-200 bg-sand-200 sm:grid-cols-3">
+        <div className="mt-12 grid gap-px overflow-hidden rounded-2xl border border-stone-200 bg-stone-200 sm:grid-cols-3">
           {steps.map((step) => (
             <div key={step.num} className="flex flex-col justify-between bg-white p-8">
               <div>
@@ -272,12 +394,9 @@ function SupportedBanks() {
           major banks to local credit unions.
         </p>
 
-        <div className="mt-12 grid grid-cols-3 gap-6 sm:grid-cols-4 lg:grid-cols-7">
+        <div className="mt-12 grid grid-cols-3 gap-x-10 gap-y-10 sm:grid-cols-4 lg:grid-cols-7">
           {banks.map((bank) => (
-            <div
-              key={bank.file}
-              className="flex items-center justify-center rounded-lg border border-sand-200 bg-white p-4"
-            >
+            <div key={bank.file} className="flex items-center justify-center">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={`/banks/${bank.file}.svg`}
@@ -329,7 +448,7 @@ function Context() {
             {items.map((item) => (
               <div
                 key={item.label}
-                className="rounded-xl border border-sand-200 bg-white p-5"
+                className="rounded-xl border border-stone-200 bg-white p-5"
               >
                 <h3 className="text-sm font-semibold text-stone-950">
                   {item.label}
@@ -373,12 +492,12 @@ function Privacy() {
         <div className="mt-12 grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
           <PrivacyCard
             title="Encrypted at rest"
-            description="AES-256 encrypted database with scrypt key derivation. File permissions locked to your user account."
+            description="Your data is encrypted on disk with the same standard used by banks. No one else can read it."
             href="https://github.com/cdinnison/ray-finance/blob/main/src/db/schema.ts"
           />
           <PrivacyCard
             title="No cloud storage"
-            description="Everything stays in ~/.ray on your machine. Even with a Ray API key, data is processed in-flight and never stored on our servers."
+            description="Everything stays in ~/.ray on your machine. No servers or security breaches to worry about."
           />
           <PrivacyCard
             title="Fully auditable"
@@ -406,7 +525,7 @@ function PrivacyCard({
   href?: string;
 }) {
   return (
-    <div className="rounded-xl border border-sand-200 bg-white p-6">
+    <div className="rounded-xl border border-stone-200 bg-white p-6">
       <h3 className="text-base font-semibold text-stone-900">{title}</h3>
       <p className="mt-2 text-sm leading-relaxed text-stone-500">
         {description}
@@ -426,7 +545,7 @@ function PrivacyCard({
 /* ─── Features ─── */
 function Features() {
   return (
-    <section id="features" className="border-t border-sand-200 bg-sand-100 py-24 sm:py-32">
+    <section id="features" className="border-t border-stone-200 bg-stone-100 py-24 sm:py-32">
       <div className="mx-auto max-w-5xl px-6">
         <p className="font-mono text-sm tracking-wide text-stone-400 uppercase">
           What Ray can do
@@ -443,25 +562,25 @@ function Features() {
           <Feature
             question={`"Can I afford to take this trip?"`}
             description="Ray projects your balance forward based on actual income and spending patterns. See the impact before you commit."
-            highlight
+
           />
           <Feature
             question={`"How's my score today?"`}
             description="A daily 0-100 behavior score with streaks and unlockable achievements. No restaurants for a week? That's Kitchen Hero. Five zero-spend days? Monk Mode. It turns financial discipline into a game you actually want to play."
-            highlight
+
           />
           <Feature
             question={`"What did we decide last time?"`}
             description="Ray remembers your goals, preferences, life events, and past decisions. Every conversation builds on the last one."
-            highlight
+
           />
           <Feature
-            question={`"Where is all my money going?"`}
-            description="Category breakdowns, period comparisons, and trend detection. Ray finds the patterns you miss in your own spending."
+            question={`"What's my net worth right now?"`}
+            description="Ray pulls balances across every linked account — checking, savings, credit cards, loans — and gives you one number. Updated every time you ask."
           />
           <Feature
-            question={`"How much am I spending on food delivery month over month?"`}
-            description="Ray breaks down any category across any time range. Spot trends you'd never catch scrolling through transactions."
+            question={`"Did anything unusual hit my account this week?"`}
+            description="Ray scans recent transactions for anomalies — unexpected charges, duplicate payments, amounts that don't match your patterns. Like a financial advisor who actually checks."
           />
           <Feature
             question={`"Can you audit to make sure my tenants have paid for the past 12 months?"`}
@@ -476,23 +595,18 @@ function Features() {
 function Feature({
   question,
   description,
-  highlight,
 }: {
   question: string;
   description: string;
-  highlight?: boolean;
 }) {
   return (
-    <div className={highlight ? "rounded-xl border border-stone-200 bg-white p-5 sm:-m-5 shadow-sm" : ""}>
+    <div className="rounded-xl border border-stone-200 bg-white p-5">
       <h3 className="font-mono text-base font-medium text-stone-900">
         {question}
       </h3>
       <p className="mt-2 text-sm leading-relaxed text-stone-500">
         {description}
       </p>
-      {highlight && (
-        <p className="mt-3 font-mono text-[11px] tracking-wide text-stone-400 uppercase">Only in Ray</p>
-      )}
     </div>
   );
 }
@@ -510,20 +624,20 @@ function Pricing() {
             Free forever. Or skip the setup.
           </h2>
           <p className="mx-auto mt-4 max-w-lg text-lg text-stone-500">
-            A human financial advisor costs $200/hr. Ray costs $10/mo&nbsp;&mdash; or nothing at all.
+            Two ways to run Ray. Both keep your data local.
           </p>
         </div>
 
         <div className="mx-auto mt-16 grid max-w-4xl gap-8 sm:grid-cols-2 items-start">
-          {/* Self-Hosted */}
-          <div className="rounded-2xl border border-sand-200 bg-white p-8 flex flex-col sm:min-h-[560px]">
+          {/* BYOK */}
+          <div className="rounded-2xl border border-stone-200 bg-white p-8 flex flex-col sm:min-h-[560px]">
             <div className="flex items-center gap-3">
-              <h3 className="text-lg font-bold text-stone-900">Self-Hosted</h3>
+              <h3 className="text-lg font-bold text-stone-900">Bring Your Own Keys</h3>
               <span className="rounded-full bg-stone-100 px-2.5 py-0.5 text-xs font-medium text-stone-500">
                 full control
               </span>
             </div>
-            <p className="mt-1 text-sm text-stone-500">Bring your own keys</p>
+            <p className="mt-1 text-sm text-stone-500">Free and open source forever</p>
             <p className="mt-6">
               <span className="text-4xl font-extrabold tracking-tight text-stone-900">
                 $0
@@ -584,14 +698,15 @@ function Pricing() {
           <div className="rounded-2xl border-2 border-stone-900 bg-white p-8 flex flex-col sm:min-h-[560px]">
             <div className="flex items-center gap-3">
               <h3 className="text-lg font-bold text-stone-900">
-                Ray Hosted Keys
+                Ray Pro
               </h3>
-              <span className="rounded-full bg-stone-900 px-2.5 py-0.5 text-xs font-medium text-white">
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-700">
+                <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.2H22l-6 4.8 2.4 7.2L12 16.4 5.6 21.2 8 14 2 9.2h7.6z"/></svg>
                 most popular
               </span>
             </div>
             <p className="mt-1 text-sm text-stone-500">
-              We handle everything
+              Just install and go
             </p>
             <p className="mt-6">
               <span className="text-4xl font-extrabold tracking-tight text-stone-900">
@@ -600,10 +715,10 @@ function Pricing() {
               <span className="text-sm text-stone-500">/month</span>
             </p>
             <ul className="mt-8 space-y-3 text-sm text-stone-600">
-              <PricingItem>AI and bank access included</PricingItem>
-              <PricingItem>No Plaid application needed</PricingItem>
-              <PricingItem>Same privacy guarantees</PricingItem>
-              <PricingItem>All features included</PricingItem>
+              <PricingItem>AI and bank connection included</PricingItem>
+              <PricingItem>Connect your accounts in seconds</PricingItem>
+              <PricingItem>Your data stays on your machine</PricingItem>
+              <PricingItem>All features, no limits</PricingItem>
               <PricingItem>Cancel anytime</PricingItem>
             </ul>
             <CopyCommand
@@ -678,13 +793,62 @@ function PricingItem({ children }: { children: React.ReactNode }) {
   );
 }
 
+/* ─── FAQ ─── */
+function FAQ() {
+  return (
+    <section id="faq" className="py-24 sm:py-32">
+      <div className="mx-auto max-w-3xl px-6">
+        <p className="font-mono text-sm tracking-wide text-stone-400 uppercase">
+          FAQ
+        </p>
+        <h2 className="mt-4 text-3xl font-extrabold tracking-tight text-stone-950 sm:text-4xl">
+          Common questions about Ray
+        </h2>
+
+        <div className="mt-12 divide-y divide-stone-200">
+          {faqItems.map((item) => (
+            <details key={item.question} className="group py-6">
+              <summary className="flex cursor-pointer items-start justify-between gap-4">
+                <h3 className="text-base font-semibold text-stone-900 group-open:text-stone-950">
+                  {item.question}
+                </h3>
+                <svg
+                  className="mt-1 h-5 w-5 shrink-0 text-stone-400 transition-transform group-open:rotate-45"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  stroke="currentColor"
+                  aria-hidden="true"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                </svg>
+              </summary>
+              <p className="mt-3 text-sm leading-relaxed text-stone-500">
+                {item.answer}
+                {item.link && (
+                  <>
+                    {" "}
+                    <a href={item.link.href} className="text-stone-900 underline decoration-stone-300 underline-offset-4 hover:text-stone-700">
+                      {item.link.text} &rarr;
+                    </a>
+                  </>
+                )}
+              </p>
+            </details>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 /* ─── CTA ─── */
 function CTA() {
   return (
     <section className="bg-stone-950 py-24 sm:py-32">
       <div className="mx-auto max-w-3xl px-6 text-center">
         <h2 className="text-2xl leading-[1.3] font-extrabold tracking-tight text-white sm:text-3xl lg:text-5xl">
-          You&rsquo;re already making financial decisions without the full&nbsp;picture.
+          Feel in control of your money&nbsp;again.
         </h2>
         <p className="mx-auto mt-6 max-w-xl text-lg text-stone-400">
           Ray is free, open source, and takes five minutes to set up.

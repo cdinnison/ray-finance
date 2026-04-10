@@ -78,6 +78,36 @@ const tabs = [
     ),
   },
   {
+    label: "Chat",
+    command: "ray",
+    isChat: true,
+    question: "can we afford a weekend trip to tahoe next month? we were thinking around $1,200",
+    output: () => null,
+    answer: () => (
+      <>
+        <p className="text-stone-300">
+          Let me check your numbers.
+        </p>
+        <Blank />
+        <p className="text-stone-300">
+          You have <W>$4,200</W> in checking and <W>$1,620</W> left in this month{"'"}s budget. Next month{"'"}s fixed expenses are <W>$2,840</W> (rent, utilities, car payment, subscriptions), leaving roughly <W>$2,560</W> discretionary after your next paycheck on the 15th.
+        </p>
+        <Blank />
+        <p className="text-stone-300">
+          <G>$1,200 is doable</G>, but it{"'"}d use 47% of your discretionary budget. That leaves <W>$1,360</W> for the rest of the month — tight if anything unexpected comes up.
+        </p>
+        <Blank />
+        <p className="text-stone-300">
+          One thing to flag: your emergency fund goal needs <W>$1,100/mo</W> and you{"'"}ve only saved <W>$400</W> this month. If you take the trip and skip this month{"'"}s contribution, you push the target date from {futureMonth(8)} to {futureMonth(10)}.
+        </p>
+        <Blank />
+        <p className="text-stone-300">
+          <D>Short answer:</D> you can afford it, but I{"'"}d budget closer to $1,000 to stay comfortable.
+        </p>
+      </>
+    ),
+  },
+  {
     label: "Accounts",
     command: "ray accounts",
     output: () => (
@@ -196,68 +226,86 @@ const tabs = [
 /* ─── Terminal Demo ─── */
 export function TerminalDemo() {
   const [activeTab, setActiveTab] = useState(0);
-  const [typedCommand, setTypedCommand] = useState("");
-  const [outputVisible, setOutputVisible] = useState(false);
-  const [phase, setPhase] = useState<"typing" | "output" | "pause">("typing");
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const mountedRef = useRef(false);
+  const [typedCommand, setTypedCommand] = useState(tabs[0].command);
+  const [typedQuestion, setTypedQuestion] = useState("");
+  const [outputVisible, setOutputVisible] = useState(true);
+  const [questionPhase, setQuestionPhase] = useState<"hidden" | "typing" | "done">("hidden");
+  const [phase, setPhase] = useState<"typing" | "output" | "pause">("pause");
 
-  const clear = useCallback(() => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-  }, []);
-
-  // On mount, show first tab complete to avoid hydration flash
   useEffect(() => {
-    if (!mountedRef.current) {
-      mountedRef.current = true;
-      setTypedCommand(tabs[0].command);
-      setOutputVisible(true);
-      setPhase("pause");
-      // Start auto-advance after initial display
-      timeoutRef.current = setTimeout(() => {
-        setActiveTab(1);
-      }, 7500);
-      return clear;
-    }
-  }, [clear]);
+    let cancelled = false;
+    const timers: NodeJS.Timeout[] = [];
+    const schedule = (fn: () => void, ms: number) => {
+      const id = setTimeout(() => { if (!cancelled) fn(); }, ms);
+      timers.push(id);
+      return id;
+    };
 
-  // Animation on tab change (skip initial mount)
-  useEffect(() => {
-    if (!mountedRef.current) return;
+    const tab = tabs[activeTab];
+    const isChat = !!(tab as any).isChat;
+    const command = tab.command;
 
     // Check for reduced motion
-    const prefersReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const command = tabs[activeTab].command;
+    const prefersReduced = typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     if (prefersReduced) {
       setTypedCommand(command);
       setOutputVisible(true);
       setPhase("pause");
-      timeoutRef.current = setTimeout(() => {
-        setActiveTab((i) => (i + 1) % tabs.length);
-      }, 7500);
-      return clear;
+      if (isChat) {
+        setTypedQuestion((tab as any).question);
+        setQuestionPhase("done");
+      }
+      schedule(() => setActiveTab((i) => (i + 1) % tabs.length), isChat ? 20000 : 7500);
+      return () => { cancelled = true; timers.forEach(clearTimeout); };
     }
 
     // Reset
     setTypedCommand("");
+    setTypedQuestion("");
     setOutputVisible(false);
+    setQuestionPhase("hidden");
     setPhase("typing");
 
     let charIndex = 0;
 
     const typeChar = () => {
+      if (cancelled) return;
       if (charIndex <= command.length) {
         setTypedCommand(command.slice(0, charIndex));
         charIndex++;
-        timeoutRef.current = setTimeout(typeChar, 30 + Math.random() * 20);
+        schedule(typeChar, 30 + Math.random() * 20);
+      } else if (isChat) {
+        schedule(() => {
+          setPhase("output");
+          setQuestionPhase("typing");
+          const question = (tab as any).question as string;
+          let qIndex = 0;
+          const typeQ = () => {
+            if (cancelled) return;
+            if (qIndex <= question.length) {
+              setTypedQuestion(question.slice(0, qIndex));
+              qIndex++;
+              schedule(typeQ, 20 + Math.random() * 15);
+            } else {
+              schedule(() => {
+                setQuestionPhase("done");
+                setOutputVisible(true);
+                schedule(() => {
+                  setPhase("pause");
+                  setActiveTab((i) => (i + 1) % tabs.length);
+                }, 20000);
+              }, 600);
+            }
+          };
+          schedule(typeQ, 300);
+        }, 400);
       } else {
-        // Done typing, show output
-        timeoutRef.current = setTimeout(() => {
+        schedule(() => {
           setOutputVisible(true);
           setPhase("output");
-          // Auto-advance after pause
-          timeoutRef.current = setTimeout(() => {
+          schedule(() => {
             setPhase("pause");
             setActiveTab((i) => (i + 1) % tabs.length);
           }, 7500);
@@ -265,17 +313,19 @@ export function TerminalDemo() {
       }
     };
 
-    timeoutRef.current = setTimeout(typeChar, 300);
-    return clear;
-  }, [activeTab, clear]);
+    schedule(typeChar, 300);
+    return () => { cancelled = true; timers.forEach(clearTimeout); };
+  }, [activeTab]);
 
   const handleTabClick = (i: number) => {
     if (i === activeTab) return;
-    clear();
     setActiveTab(i);
   };
 
-  const Output = tabs[activeTab].output;
+  const currentTab = tabs[activeTab];
+  const isChat = !!(currentTab as any).isChat;
+  const Output = currentTab.output;
+  const Answer = isChat ? (currentTab as any).answer : null;
 
   return (
     <>
@@ -323,8 +373,35 @@ export function TerminalDemo() {
         </p>
         <Blank />
 
-        {/* Output */}
-        {outputVisible && <Output />}
+        {isChat ? (
+          <>
+            {questionPhase !== "hidden" && (
+              <>
+                {questionPhase === "typing" ? (
+                  <>
+                    <div className="border-t border-stone-700 -mx-5 sm:-mx-8" />
+                    <p className="text-stone-300 mt-2">
+                      <span className="text-stone-500">{"❯ "}</span>
+                      {typedQuestion}
+                      <span className="inline-block w-[7px] h-[15px] ml-px align-middle bg-stone-300 animate-pulse" />
+                    </p>
+                    <div className="border-t border-stone-700 -mx-5 sm:-mx-8 mt-2" />
+                  </>
+                ) : (
+                  <div className="bg-stone-700/50 -mx-5 sm:-mx-8 px-5 sm:px-8 py-2">
+                    <p className="text-white">
+                      {"❯ "}{typedQuestion}
+                    </p>
+                  </div>
+                )}
+                <Blank />
+              </>
+            )}
+            {outputVisible && Answer && <Answer />}
+          </>
+        ) : (
+          outputVisible && <Output />
+        )}
       </div>
 
       {/* Status bar */}

@@ -144,7 +144,7 @@ export function PIIScramble() {
       : "Raw financial data";
 
   return (
-    <div ref={containerRef} className="rounded-xl border border-sand-200 bg-white p-6 sm:p-8">
+    <div ref={containerRef} className="rounded-xl border border-stone-200 bg-white p-6 sm:p-8">
       <div className="mb-6 flex items-center gap-3">
         <div
           className={`h-2 w-2 rounded-full transition-colors duration-300 ${

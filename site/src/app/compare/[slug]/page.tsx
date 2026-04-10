@@ -279,10 +279,25 @@ function VsPage({ page }: { page: ComparisonPage }) {
         dangerouslySetInnerHTML={{
           __html: JSON.stringify({
             "@context": "https://schema.org",
-            "@type": "WebPage",
-            name: page.metaTitle,
-            description: page.metaDescription,
-            url: `https://rayfinance.app/compare/${page.slug}`,
+            "@type": "FAQPage",
+            mainEntity: [
+              {
+                "@type": "Question",
+                name: `How does Ray compare to ${page.competitor.name}?`,
+                acceptedAnswer: {
+                  "@type": "Answer",
+                  text: page.verdict.replace(/\n/g, " "),
+                },
+              },
+              {
+                "@type": "Question",
+                name: `What are the key differences between Ray and ${page.competitor.name}?`,
+                acceptedAnswer: {
+                  "@type": "Answer",
+                  text: page.rayAdvantages.map((a) => `${a.title}: ${a.description}`).join(" "),
+                },
+              },
+            ],
           }),
         }}
       />
@@ -428,10 +443,25 @@ function AlternativePage({ page }: { page: ComparisonPage }) {
         dangerouslySetInnerHTML={{
           __html: JSON.stringify({
             "@context": "https://schema.org",
-            "@type": "WebPage",
-            name: page.metaTitle,
-            description: page.metaDescription,
-            url: `https://rayfinance.app/compare/${page.slug}`,
+            "@type": "FAQPage",
+            mainEntity: [
+              {
+                "@type": "Question",
+                name: `What is the best alternative to ${page.competitor.name}?`,
+                acceptedAnswer: {
+                  "@type": "Answer",
+                  text: page.verdict.replace(/\n/g, " "),
+                },
+              },
+              {
+                "@type": "Question",
+                name: `Why do people switch from ${page.competitor.name} to Ray?`,
+                acceptedAnswer: {
+                  "@type": "Answer",
+                  text: page.rayAdvantages.map((a) => `${a.title}: ${a.description}`).join(" "),
+                },
+              },
+            ],
           }),
         }}
       />

@@ -19,6 +19,16 @@ export const metadata: Metadata = {
     "open source finance",
     "Plaid CLI",
     "financial planning AI",
+    "best money app",
+    "best budgeting app",
+    "Monarch Money alternative",
+    "Copilot Money alternative",
+    "Mint alternative",
+    "privacy-first budgeting app",
+    "no-signup finance app",
+    "self-hosted personal finance",
+    "AI money coach",
+    "on-device financial advisor",
   ],
   authors: [{ name: "Clark Dinnison" }],
   alternates: {
@@ -53,6 +63,23 @@ export const metadata: Metadata = {
   },
 };
 
+const organizationJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  name: "Ray Finance",
+  url: "https://rayfinance.app",
+  logo: "https://rayfinance.app/favicon.png",
+  description:
+    "Ray is an open-source, local-first AI financial advisor that connects to your bank via Plaid and gives personalized financial advice — all running on your machine.",
+  foundingDate: "2024",
+  founder: {
+    "@type": "Person",
+    name: "Clark Dinnison",
+    url: "https://github.com/cdinnison",
+  },
+  sameAs: ["https://github.com/cdinnison/ray-finance"],
+};
+
 export default function RootLayout({
   children,
 }: {
@@ -60,7 +87,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={`${GeistSans.variable} ${GeistMono.variable} ${GeistPixelSquare.variable}`} style={{ colorScheme: "light" }}>
-      <body className="bg-sand-50 text-stone-900 font-sans">
+      <body className="bg-stone-50 text-stone-900 font-sans">
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd) }}
+        />
         {children}
         <Footer />
         <div className="pointer-events-none fixed bottom-0 left-0 right-0 z-50 select-none overflow-hidden font-mono text-lg leading-none text-stone-300/40" aria-hidden="true">

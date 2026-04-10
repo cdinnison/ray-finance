@@ -165,6 +165,26 @@ program
   });
 
 program
+  .command("bills")
+  .description("Show upcoming bills")
+  .option("-d, --days <number>", "Number of days ahead", "7")
+  .action(async (opts) => {
+    ensureConfigured();
+    const { showBills } = await import("./commands.js");
+    showBills(Number(opts.days));
+  });
+
+program
+  .command("recap")
+  .description("Monthly spending recap")
+  .argument("[period]", "Period: this_month, last_month", "last_month")
+  .action(async (period) => {
+    ensureConfigured();
+    const { showRecap } = await import("./commands.js");
+    showRecap(period);
+  });
+
+program
   .command("export")
   .description("Export user data (goals, budgets, memories, context) to a backup file")
   .argument("[path]", "Output file path", undefined)
@@ -190,7 +210,7 @@ program
   .action(async () => {
     ensureConfigured();
     if (!useManaged()) {
-      console.log("You're using self-hosted keys. No subscription to manage.");
+      console.log("You're using your own keys. No subscription to manage.");
       return;
     }
     const open = (await import("open")).default;
@@ -241,13 +261,6 @@ program
     seedDemoDb(demoPath);
   });
 
-program
-  .command("completions")
-  .description("Install shell completions")
-  .action(async () => {
-    const { installCompletions } = await import("./completions.js");
-    installCompletions();
-  });
 
 function ensureConfigured(): void {
   if (isDemoMode) return;
@@ -273,13 +286,14 @@ program.configureHelp({
     { name: "goals", desc: "Show financial goals" },
     { name: "score", desc: "Show daily financial score and streaks" },
     { name: "alerts", desc: "Show financial alerts" },
+    { name: "bills", desc: "Show upcoming bills" },
+    { name: "recap", desc: "Monthly spending recap" },
     { name: "export", desc: "Export data to a backup file" },
     { name: "import", desc: "Restore data from a backup file" },
     { name: "billing", desc: "Manage your Ray subscription" },
     { name: "update", desc: "Update Ray to the latest version" },
     { name: "doctor", desc: "Check system health" },
     { name: "demo", desc: "Seed a demo database with fake data" },
-    { name: "completions", desc: "Install shell completions" },
   ]),
 });
 

@@ -581,6 +581,15 @@ export function categoryLabel(cat: string): string {
     GOVERNMENT_AND_NON_PROFIT: "Gov/Nonprofit",
     MEDICAL: "Medical",
     BANK_FEES: "Bank Fees",
+    EDUCATION: "Education",
+    INSURANCE: "Insurance",
+    BUSINESS: "Business",
+    INCOME: "Income",
+    TRANSFER_IN: "Transfer In",
+    TRANSFER_OUT: "Transfer Out",
+    HOME_IMPROVEMENT: "Home Improvement",
+    TRAVEL: "Travel",
+    OTHER: "Other",
   };
-  return labels[cat] || cat;
+  return labels[cat] || cat.split("_").map(w => w.charAt(0) + w.slice(1).toLowerCase()).join(" ");
 }

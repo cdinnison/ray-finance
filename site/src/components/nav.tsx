@@ -16,7 +16,7 @@ function GitHubIcon() {
 export function Nav({ minimal }: { minimal?: boolean }) {
   if (minimal) {
     return (
-      <nav aria-label="Main navigation" className="fixed top-0 left-0 right-0 z-50 border-b border-sand-200/60 bg-sand-50/80 backdrop-blur-xl">
+      <nav aria-label="Main navigation" className="fixed top-0 left-0 right-0 z-50 border-b border-stone-200/60 bg-stone-50/80 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <Link href="/">
             <Image src="/ray-logo-dark.png" alt="Ray" width={38} height={19} className="h-[19px] w-auto" />
@@ -34,7 +34,7 @@ export function Nav({ minimal }: { minimal?: boolean }) {
   }
 
   return (
-    <nav aria-label="Main navigation" className="fixed top-0 left-0 right-0 z-50 border-b border-sand-200/60 bg-sand-50/80 backdrop-blur-xl">
+    <nav aria-label="Main navigation" className="fixed top-0 left-0 right-0 z-50 border-b border-stone-200/60 bg-stone-50/80 backdrop-blur-xl">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
         <Link href="/">
           <Image src="/ray-logo-dark.png" alt="Ray" width={38} height={19} className="h-[19px] w-auto" />
@@ -64,7 +64,7 @@ export function Nav({ minimal }: { minimal?: boolean }) {
             className="inline-flex items-center gap-2 rounded-full bg-stone-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-stone-800"
           >
             <GitHubIcon />
-            View on GitHub
+            Star on GitHub
           </a>
         </div>
         {/* Mobile nav */}

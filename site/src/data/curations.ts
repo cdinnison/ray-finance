@@ -91,7 +91,7 @@ One trend worth noting: privacy-first and open-source options are gaining ground
           "AI features are basic compared to dedicated AI tools",
           "Limited customization for power users",
         ],
-        pricing: "$9.99/mo or $99.99/yr",
+        pricing: "$14.99/mo or $99.99/yr",
         url: "https://www.monarchmoney.com",
       },
       {
@@ -107,10 +107,10 @@ One trend worth noting: privacy-first and open-source options are gaining ground
         ],
         cons: [
           "Apple-only — no Android or web version",
-          "Relatively expensive at $14.99/mo",
+          "Relatively expensive at $13/mo",
           "AI advice is limited to spending summaries",
         ],
-        pricing: "$14.99/mo or $69.99/yr",
+        pricing: "$13/mo or $95/yr",
         url: "https://copilot.money",
       },
       {
@@ -162,7 +162,7 @@ One trend worth noting: privacy-first and open-source options are gaining ground
           "Categorization can be inconsistent",
           "Lacks depth for serious budgeters",
         ],
-        pricing: "Free / $7.99/mo (Plus)",
+        pricing: "Free / $12.99/mo (Plus)",
         url: "https://pocketguard.com",
       },
     ],
@@ -222,11 +222,11 @@ We evaluated each tool on account coverage, data accuracy, investment tracking q
           "Strong Plaid integration with wide bank coverage",
         ],
         cons: [
-          "No free tier — $9.99/mo minimum",
+          "No free tier — $14.99/mo minimum",
           "Investment analysis is good but not as deep as Empower",
           "Can feel overwhelming with all features turned on",
         ],
-        pricing: "$9.99/mo or $99.99/yr",
+        pricing: "$14.99/mo or $99.99/yr",
         url: "https://www.monarchmoney.com",
       },
       {
@@ -298,10 +298,10 @@ We evaluated each tool on account coverage, data accuracy, investment tracking q
         ],
         cons: [
           "Apple ecosystem only — no Android or web",
-          "Premium pricing at $14.99/mo",
+          "Premium pricing at $13/mo",
           "Less depth on investment analysis than Empower",
         ],
-        pricing: "$14.99/mo or $69.99/yr",
+        pricing: "$13/mo or $95/yr",
         url: "https://copilot.money",
       },
     ],
@@ -365,7 +365,7 @@ The spectrum runs from lightweight chatbot overlays to full AI-native financial 
           "Apple-only limits accessibility",
           "AI can't answer complex planning questions",
         ],
-        pricing: "$14.99/mo or $69.99/yr",
+        pricing: "$13/mo or $95/yr",
         url: "https://copilot.money",
       },
       {
@@ -402,7 +402,7 @@ The spectrum runs from lightweight chatbot overlays to full AI-native financial 
           "No free tier — subscription required to try AI features",
           "AI can't handle complex financial planning scenarios",
         ],
-        pricing: "$9.99/mo or $99.99/yr",
+        pricing: "$14.99/mo or $99.99/yr",
         url: "https://www.monarchmoney.com",
       },
       {
@@ -518,7 +518,7 @@ We focused on how well each tool answers the core question: where is my money go
           "Categorization accuracy is hit-or-miss",
           "Limited reporting and export options",
         ],
-        pricing: "Free / $7.99/mo (Plus)",
+        pricing: "Free / $12.99/mo (Plus)",
         url: "https://pocketguard.com",
       },
       {
@@ -611,11 +611,11 @@ We tested each alternative specifically for how well it replaces Mint's core fea
           "Household sharing for couples",
         ],
         cons: [
-          "No free tier — $9.99/mo is a jump from Mint's $0",
+          "No free tier — $14.99/mo is a jump from Mint's $0",
           "Some advanced features take time to discover",
           "Mobile app, while good, isn't as quick as Mint was",
         ],
-        pricing: "$9.99/mo or $99.99/yr",
+        pricing: "$14.99/mo or $99.99/yr",
         url: "https://www.monarchmoney.com",
       },
       {
@@ -651,10 +651,10 @@ We tested each alternative specifically for how well it replaces Mint's core fea
         ],
         cons: [
           "Apple-only — Android users need not apply",
-          "Most expensive option at $14.99/mo",
+          "$13/mo with no free tier",
           "No web version for desktop-first users",
         ],
-        pricing: "$14.99/mo or $69.99/yr",
+        pricing: "$13/mo or $95/yr",
         url: "https://copilot.money",
       },
       {
