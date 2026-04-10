@@ -15,26 +15,37 @@
 <br />
 
 <p align="center">
-  <img src=".github/ray-demo.png" alt="Ray demo" />
+  <img src=".github/ray-demo.gif" alt="Ray demo" />
 </p>
 
 Open Ray and it shows your net worth, spending vs last month, budget pacing, and upcoming bills — before you type a word. Ask a question and it answers from your real data, not guesses. Local-first. Encrypted. Open source.
 
 ## Features
 
-- **It already knows** — Every conversation starts with a real-time financial briefing. Net worth, spending velocity, budget alerts, goal pace, upcoming bills, and your daily score. No "let me look that up."
-- **Persistent context** — Ray maintains a financial profile that evolves with you: income, goals, strategy, key decisions, and open items. It updates this context as your situation changes, so every conversation picks up where the last one left off.
-- **Long-term memory** — Important details from conversations are saved as memories. Mention you're saving for a house or switching jobs and Ray remembers — without you repeating yourself.
-- **Bank sync via Plaid** — Connect checking, savings, credit cards, investments, and loans
-- **Encrypted local database** — All data stays on your machine in an AES-256 encrypted SQLite database
-- **Daily scoring** — A 0-100 behavior score with streaks and 14 unlockable achievements. No restaurants for a week? That's Kitchen Hero. Five zero-spend days? Monk Mode.
+### Never repeat yourself
+
+- **Always up to speed** — Every conversation starts with your full financial picture. Net worth, spending velocity, budget alerts, goal pace, upcoming bills, and your daily score. No "let me look that up."
+- **Persistent context** — Ray maintains a financial profile that evolves with you: income, goals, strategy, key decisions, and open items. Every conversation picks up where the last one left off.
+- **Long-term memory** — Mention you're saving for a house or switching jobs and Ray remembers — without you repeating yourself.
+
+### Stay on track without trying
+
 - **CFO personality** — Ray doesn't list options. It tells you what it would do and why, references your goals, and flags problems you haven't noticed yet.
-- **Budgets and goals** — Track spending limits by category and progress toward financial goals
+- **Daily scoring** — A 0-100 behavior score with streaks and 14 unlockable achievements. No restaurants for a week? That's Kitchen Hero. Five zero-spend days? Monk Mode.
+- **Budgets and goals** — Track spending limits by category and progress toward financial goals.
+- **Smart alerts** — Large transactions, low balances, budget overruns.
+
+### Your data never leaves your machine
+
+- **Encrypted local database** — All data stays on your machine in an AES-256 encrypted SQLite database.
 - **PII masking** — Names, account numbers, and identifying details are scrubbed before anything reaches the AI. Your data is analyzed, not exposed.
-- **Smart alerts** — Large transactions, low balances, budget overruns
-- **Auto-recategorization** — Define rules to automatically re-label transactions
-- **Scheduled daily sync** — Automatic bank sync via launchd (macOS) or cron (Linux)
-- **Export/import** — Back up and restore your financial data
+
+### Set it and forget it
+
+- **Bank sync via Plaid** — Connect checking, savings, credit cards, investments, and loans.
+- **Scheduled daily sync** — Automatic bank sync via launchd (macOS) or cron (Linux).
+- **Auto-recategorization** — Define rules to automatically re-label transactions.
+- **Export/import** — Back up and restore your financial data.
 
 ## Install
 
