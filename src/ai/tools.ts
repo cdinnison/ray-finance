@@ -1,4 +1,5 @@
 import type Database from "libsql";
+import { jsonSchema, tool, type ToolSet } from "ai";
 import type { Tool } from "@anthropic-ai/sdk/resources/messages.js";
 import {
   getNetWorth, getAccountBalances, getTransactionsFiltered,
@@ -14,22 +15,32 @@ import { saveMemory, getMemories } from "./memory.js";
 import { readContext, writeContext, replaceContextSection } from "./context.js";
 import { simulatePayoff } from "../db/helpers.js";
 
-export const toolDefinitions: Tool[] = [
+interface ToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: {
+    type: "object";
+    properties: Record<string, unknown>;
+    required: string[];
+  };
+}
+
+const toolRegistry: ToolDefinition[] = [
   // --- Existing tools ---
   {
     name: "get_net_worth",
     description: "Get current net worth with breakdown of assets, liabilities, investments, cash, and home equity",
-    input_schema: { type: "object" as const, properties: {}, required: [] },
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
   },
   {
     name: "get_accounts",
     description: "List all linked bank accounts with current balances",
-    input_schema: { type: "object" as const, properties: {}, required: [] },
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
   },
   {
     name: "get_transactions",
     description: "Search transactions with optional filters. Returns matching transactions.",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         start_date: { type: "string", description: "Start date (YYYY-MM-DD). Defaults to 30 days ago." },
@@ -46,7 +57,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: "get_spending_summary",
     description: "Get spending breakdown by category for a time period",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         period: { type: "string", description: "Period: this_month, last_month, last_30, last_90, or YYYY-MM-DD:YYYY-MM-DD", default: "this_month" },
@@ -57,12 +68,12 @@ export const toolDefinitions: Tool[] = [
   {
     name: "get_budgets",
     description: "Get all budget categories with current month spending vs limits",
-    input_schema: { type: "object" as const, properties: {}, required: [] },
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
   },
   {
     name: "set_budget",
     description: "Create or update a monthly budget for a spending category",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         category: { type: "string", description: "Plaid category (e.g. FOOD_AND_DRINK, GENERAL_MERCHANDISE, ENTERTAINMENT)" },
@@ -74,12 +85,12 @@ export const toolDefinitions: Tool[] = [
   {
     name: "get_goals",
     description: "Get financial goals with progress tracking",
-    input_schema: { type: "object" as const, properties: {}, required: [] },
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
   },
   {
     name: "set_goal",
     description: "Create or update a financial goal",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         name: { type: "string", description: "Goal name" },
@@ -93,22 +104,22 @@ export const toolDefinitions: Tool[] = [
   {
     name: "get_score",
     description: "Get the latest daily financial behavior score (0-100) and streaks",
-    input_schema: { type: "object" as const, properties: {}, required: [] },
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
   },
   {
     name: "get_recurring",
     description: "List detected recurring transactions and bills",
-    input_schema: { type: "object" as const, properties: {}, required: [] },
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
   },
   {
     name: "get_alerts",
     description: "Get current financial alerts (large transactions, low balances, budget overruns)",
-    input_schema: { type: "object" as const, properties: {}, required: [] },
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
   },
   {
     name: "save_memory",
     description: "Save an important fact or preference to long-term memory. Use this when the user shares something worth remembering across conversations.",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         content: { type: "string", description: "The fact or preference to remember" },
@@ -120,14 +131,14 @@ export const toolDefinitions: Tool[] = [
   {
     name: "get_memories",
     description: "Retrieve all saved long-term memories",
-    input_schema: { type: "object" as const, properties: {}, required: [] },
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
   },
 
   // --- New: Income & Search ---
   {
     name: "get_income",
     description: "Get income sources and amounts for a time period",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         start_date: { type: "string", description: "Start date (YYYY-MM-DD). Defaults to start of current month." },
@@ -139,7 +150,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: "search_transactions",
     description: "Full-text search transactions by name, merchant, or category. Use this when the user asks to find specific transactions.",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         query: { type: "string", description: "Search query (matches name, merchant, or category)" },
@@ -151,7 +162,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: "categorize_transaction",
     description: "Re-categorize a specific transaction",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         transaction_id: { type: "string", description: "The transaction ID to recategorize" },
@@ -166,7 +177,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: "cash_flow",
     description: "Analyze income vs expenses with savings rate and monthly breakdown",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         start_date: { type: "string", description: "Start date (YYYY-MM-DD). Defaults to 3 months ago." },
@@ -178,7 +189,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: "forecast_balance",
     description: "Project account balance N months forward based on recent cash flow patterns",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         account_id: { type: "string", description: "Specific account ID (optional, defaults to all depository)" },
@@ -190,7 +201,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: "compare_spending",
     description: "Side-by-side spending comparison of two time periods, broken down by category",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         period1_start: { type: "string", description: "Period 1 start date (YYYY-MM-DD)" },
@@ -204,7 +215,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: "get_net_worth_trend",
     description: "Get net worth history over time to see the trend",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         limit: { type: "number", description: "Number of data points (default 30)" },
@@ -215,31 +226,31 @@ export const toolDefinitions: Tool[] = [
   {
     name: "get_monthly_savings",
     description: "Compare this month's spending pace to the baseline month to see how much you're saving",
-    input_schema: { type: "object" as const, properties: {}, required: [] },
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
   },
 
   // --- New: Investments ---
   {
     name: "get_portfolio",
     description: "Get investment holdings grouped by account with values, cost basis, and gain/loss",
-    input_schema: { type: "object" as const, properties: {}, required: [] },
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
   },
   {
     name: "investment_performance",
     description: "Get investment returns vs cost basis for each holding",
-    input_schema: { type: "object" as const, properties: {}, required: [] },
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
   },
 
   // --- New: Debts ---
   {
     name: "get_debts",
     description: "List all debts with balances, interest rates, and minimum payments",
-    input_schema: { type: "object" as const, properties: {}, required: [] },
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
   },
   {
     name: "calculate_debt_payoff",
     description: "Simulate debt payoff with different strategies (minimum, avalanche, snowball) and optional extra payment",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         strategy: { type: "string", description: "Payoff strategy: minimum, avalanche (highest rate first), or snowball (lowest balance first)", default: "avalanche" },
@@ -253,7 +264,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: "update_context",
     description: "Update the persistent financial context file. Use when circumstances change: new decisions, completed goals, changed balances, updated strategy, or important life events. Use 'section' param to replace a specific section cleanly.",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         updates: { type: "string", description: "Description of what changed and the new information to incorporate (used when no section specified)" },
@@ -268,7 +279,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: "delete_budget",
     description: "Remove a budget category",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         category: { type: "string", description: "Budget category to delete" },
@@ -279,7 +290,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: "delete_goal",
     description: "Remove a financial goal",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         name: { type: "string", description: "Goal name to delete" },
@@ -290,7 +301,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: "update_goal_progress",
     description: "Update the current amount on a financial goal",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         name: { type: "string", description: "Goal name" },
@@ -302,7 +313,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: "label_transaction",
     description: "Add a note or label to a transaction for personal tracking",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         transaction_id: { type: "string", description: "Transaction ID" },
@@ -315,7 +326,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: "add_recat_rule",
     description: "Create an auto-recategorization rule for future syncs. Transactions matching the pattern will be automatically recategorized.",
-    input_schema: {
+    inputSchema: {
       type: "object" as const,
       properties: {
         match_field: { type: "string", description: "Field to match: name, merchant_name" },
@@ -328,6 +339,39 @@ export const toolDefinitions: Tool[] = [
     },
   },
 ];
+
+export const toolDefinitions: Tool[] = toolRegistry.map(toolSpec => ({
+  name: toolSpec.name,
+  description: toolSpec.description,
+  input_schema: toolSpec.inputSchema,
+}));
+
+interface CreateAiSdkToolSetOptions {
+  onToolStart?: (toolName: string, toolInput: unknown) => void;
+  onToolResult?: (toolName: string, toolInput: unknown, result: string) => void;
+  transformResult?: (result: string) => string;
+}
+
+export function createAiSdkToolSet(
+  db: Database.Database,
+  options: CreateAiSdkToolSetOptions = {},
+): ToolSet {
+  return Object.fromEntries(
+    toolRegistry.map(toolSpec => [
+      toolSpec.name,
+      tool({
+        description: toolSpec.description,
+        inputSchema: jsonSchema(toolSpec.inputSchema),
+        execute: async (input) => {
+          options.onToolStart?.(toolSpec.name, input);
+          const result = await executeTool(db, toolSpec.name, input);
+          options.onToolResult?.(toolSpec.name, input, result);
+          return options.transformResult ? options.transformResult(result) : result;
+        },
+      }),
+    ]),
+  );
+}
 
 export async function executeTool(db: Database.Database, toolName: string, toolInput: any): Promise<string> {
   switch (toolName) {

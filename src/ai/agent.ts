@@ -1,20 +1,16 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { generateText, stepCountIs, type ModelMessage } from "ai";
 import type Database from "libsql";
 import { config, useManaged, RAY_PROXY_BASE } from "../config.js";
 import { buildSystemPrompt } from "./system-prompt.js";
-import { toolDefinitions, executeTool } from "./tools.js";
+import { createAiSdkToolSet, toolDefinitions } from "./tools.js";
 import { getConversationHistory, saveMessage } from "./memory.js";
 import { logToolCall } from "./audit.js";
 import { redact, unredact } from "./redactor.js";
+import { createSelfHostedModel, getResolvedSelfHostedModelConfig, getSelfHostedProviderOptions } from "./model.js";
 
-const anthropic = new Anthropic(
-  useManaged()
-    ? { apiKey: config.rayApiKey, baseURL: `${RAY_PROXY_BASE}/ai` }
-    : { apiKey: config.anthropicKey }
-);
-
-function supportsThinking(model: string): boolean {
-  return /sonnet-4|opus-4/i.test(model);
+function getManagedClient() {
+  return new Anthropic({ apiKey: config.rayApiKey, baseURL: `${RAY_PROXY_BASE}/ai` });
 }
 
 /** Human-readable labels for tool calls shown in the spinner */
@@ -41,96 +37,91 @@ export type ProgressCallback = (event: {
   elapsedMs: number;
 }) => void;
 
-export async function handleMessage(
-  db: Database.Database,
-  userMessage: string,
-  onProgress?: ProgressCallback,
-): Promise<string> {
-  // Save incoming message
-  saveMessage(db, "user", userMessage);
+function getErrorStatus(error: any): number | undefined {
+  return error?.statusCode ?? error?.status ?? error?.response?.status;
+}
 
-  // Load conversation context, truncated to fit token budget
+function normalizeHistoryMessages(db: Database.Database, userMessage: string): ModelMessage[] {
   const rawHistory = getConversationHistory(db, 30);
-  const MAX_HISTORY_CHARS = 24_000; // ~6k tokens, leaves room for system prompt + response
+  const MAX_HISTORY_CHARS = 24_000;
   let historyChars = 0;
   const history = [];
+
   for (let i = rawHistory.length - 1; i >= 0; i--) {
     historyChars += rawHistory[i].content.length;
     if (historyChars > MAX_HISTORY_CHARS) break;
     history.unshift(rawHistory[i]);
   }
 
-  // Build system prompt and redact PII before sending to API
-  const systemPrompt = redact(buildSystemPrompt(db));
-
-  // Build messages array from history, redacting PII
-  const messages: Anthropic.MessageParam[] = history.map(h => ({
-    role: h.role as "user" | "assistant",
-    content: redact(h.content),
+  const messages: ModelMessage[] = history.map(entry => ({
+    role: entry.role as "user" | "assistant",
+    content: redact(entry.content),
   }));
 
-  // Ensure last message is the current user message
-  if (messages.length === 0 || messages[messages.length - 1].content !== userMessage) {
-    messages.push({ role: "user", content: redact(userMessage) });
+  const redactedUserMessage = redact(userMessage);
+  if (
+    messages.length === 0 ||
+    messages[messages.length - 1].role !== "user" ||
+    messages[messages.length - 1].content !== redactedUserMessage
+  ) {
+    messages.push({ role: "user", content: redactedUserMessage });
   }
 
-  // Extended thinking config
-  const useThinking = config.thinkingBudget > 0 && supportsThinking(config.model);
+  return messages;
+}
+
+async function handleManagedMessage(
+  db: Database.Database,
+  userMessage: string,
+  onProgress?: ProgressCallback,
+): Promise<string> {
+  const anthropic = getManagedClient();
+  const systemPrompt = redact(buildSystemPrompt(db));
+  const messages = normalizeHistoryMessages(db, userMessage) as Anthropic.MessageParam[];
 
   try {
-    // Build API params
     const apiParams: any = {
       model: config.model,
-      max_tokens: useThinking ? 16000 : 4096,
+      max_tokens: 4096,
       system: systemPrompt,
       tools: toolDefinitions,
       messages,
     };
 
-    if (useThinking) {
-      apiParams.thinking = {
-        type: "enabled",
-        budget_tokens: config.thinkingBudget,
-      };
-    }
-
-    // Initial API call
     let response = await anthropic.messages.create(apiParams);
-
-    // Agentic tool loop
     const startTime = Date.now();
     let toolCount = 0;
 
     while (response.stop_reason === "tool_use") {
-      // Filter out thinking blocks before adding to messages
       const assistantContent = response.content.filter(
-        (b: any) => b.type !== "thinking"
+        (block: any) => block.type !== "thinking",
       ) as Anthropic.ContentBlock[];
       messages.push({ role: "assistant", content: assistantContent });
 
       const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
       for (const block of assistantContent) {
-        if (block.type === "tool_use") {
-          toolCount++;
-          onProgress?.({
-            phase: "tool",
-            toolName: block.name,
-            toolCount,
-            elapsedMs: Date.now() - startTime,
-          });
-          const result = await executeTool(db, block.name, block.input);
-          logToolCall(db, block.name, block.input, result, response.usage?.output_tokens);
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: block.id,
-            content: redact(result),
-          });
-        }
+        if (block.type !== "tool_use") continue;
+
+        toolCount++;
+        onProgress?.({
+          phase: "tool",
+          toolName: block.name,
+          toolCount,
+          elapsedMs: Date.now() - startTime,
+        });
+
+        const { executeTool } = await import("./tools.js");
+        const result = await executeTool(db, block.name, block.input);
+        logToolCall(db, block.name, block.input, result, response.usage?.output_tokens);
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: redact(result),
+        });
       }
 
       messages.push({ role: "user", content: toolResults });
-
       onProgress?.({
         phase: "responding",
         toolCount,
@@ -140,28 +131,100 @@ export async function handleMessage(
       response = await anthropic.messages.create(apiParams);
     }
 
-    // Extract text response (filter out thinking blocks), restore PII for display
-    const textBlocks = response.content.filter((b: any) => b.type === "text");
-    const responseText = unredact(textBlocks.map((b: any) => b.text).join("\n"));
-
-    // Save assistant response
-    saveMessage(db, "assistant", responseText);
-
-    return responseText || "I looked into that but couldn't formulate a response. Could you try rephrasing?";
+    const textBlocks = response.content.filter((block: any) => block.type === "text");
+    return unredact(textBlocks.map((block: any) => block.text).join("\n"));
   } catch (error: any) {
-    if (error.status === 403) {
+    const status = getErrorStatus(error);
+    if (status === 403) {
       return "Your API key was rejected. This usually means your subscription is inactive. Run `ray billing` to check your payment status, or `ray setup` to reconfigure.";
     }
-    if (error.status === 401) {
+    if (status === 401) {
       return "Invalid API key. Run `ray setup` to reconfigure your credentials.";
     }
-    if (error.status === 429) {
+    if (status === 429) {
       return "Rate limited. Wait a moment and try again.";
     }
-    const safeMessage = error.status
-      ? `API error (${error.status})`
-      : error.message || "internal error";
+    const safeMessage = status ? `API error (${status})` : error.message || "internal error";
     console.error("AI error:", safeMessage);
     return "Sorry, I had trouble processing that. Could you try again?";
   }
+}
+
+async function handleSelfHostedMessage(
+  db: Database.Database,
+  userMessage: string,
+  onProgress?: ProgressCallback,
+): Promise<string> {
+  const systemPrompt = redact(buildSystemPrompt(db));
+  const messages = normalizeHistoryMessages(db, userMessage);
+  const startTime = Date.now();
+  let toolCount = 0;
+
+  try {
+    const result = await generateText({
+      model: createSelfHostedModel(),
+      system: systemPrompt,
+      messages,
+      tools: createAiSdkToolSet(db, {
+        onToolStart: (toolName, toolInput) => {
+          toolCount++;
+          onProgress?.({
+            phase: "tool",
+            toolName,
+            toolCount,
+            elapsedMs: Date.now() - startTime,
+          });
+        },
+        onToolResult: (toolName, toolInput, toolResult) => {
+          logToolCall(db, toolName, toolInput, toolResult);
+        },
+        transformResult: redact,
+      }),
+      stopWhen: stepCountIs(10),
+      providerOptions: getSelfHostedProviderOptions(),
+      onStepFinish: ({ toolCalls }) => {
+        if (toolCalls.length === 0 || toolCount === 0) return;
+        onProgress?.({
+          phase: "responding",
+          toolCount,
+          elapsedMs: Date.now() - startTime,
+        });
+      },
+    });
+
+    return unredact(
+      result.text || "I looked into that but couldn't formulate a response. Could you try rephrasing?",
+    );
+  } catch (error: any) {
+    const status = getErrorStatus(error);
+    if (status === 401) {
+      return "Invalid LLM credentials. Run `ray setup` to reconfigure your provider.";
+    }
+    if (status === 403) {
+      return "Your LLM request was rejected by the configured provider. Run `ray setup` to verify your credentials and model.";
+    }
+    if (status === 429) {
+      return "Rate limited by your configured LLM provider. Wait a moment and try again.";
+    }
+
+    const provider = getResolvedSelfHostedModelConfig().providerLabel;
+    const safeMessage = status ? `${provider} API error (${status})` : error.message || "internal error";
+    console.error("AI error:", safeMessage);
+    return "Sorry, I had trouble processing that. Could you try again?";
+  }
+}
+
+export async function handleMessage(
+  db: Database.Database,
+  userMessage: string,
+  onProgress?: ProgressCallback,
+): Promise<string> {
+  saveMessage(db, "user", userMessage);
+
+  const responseText = useManaged()
+    ? await handleManagedMessage(db, userMessage, onProgress)
+    : await handleSelfHostedMessage(db, userMessage, onProgress);
+
+  saveMessage(db, "assistant", responseText);
+  return responseText || "I looked into that but couldn't formulate a response. Could you try rephrasing?";
 }

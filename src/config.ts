@@ -3,12 +3,18 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from "f
 import { resolve } from "path";
 import { homedir } from "os";
 
+export type SelfHostedLlmProvider = "anthropic" | "openai" | "ollama";
+
 export interface RayConfig {
   anthropicKey: string;
   rayApiKey: string;
   model: string;
   displayLocale: string;
   displayCurrency: string;
+  llmProvider: SelfHostedLlmProvider;
+  llmApiKey: string;
+  llmBaseUrl: string;
+  llmModel: string;
   plaidClientId: string;
   plaidSecret: string;
   plaidEnv: string;
@@ -25,6 +31,55 @@ export interface RayConfig {
 }
 
 export const RAY_PROXY_BASE = "https://api.rayfinance.app/v1";
+export const DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434/v1";
+
+const DEFAULT_LLM_MODELS: Record<SelfHostedLlmProvider, string> = {
+  anthropic: "claude-sonnet-4-6",
+  openai: "gpt-5-mini",
+  ollama: "llama3.1:8b",
+};
+
+function normalizeProvider(value: unknown): SelfHostedLlmProvider | null {
+  if (value === "anthropic" || value === "openai" || value === "ollama") return value;
+  return null;
+}
+
+export function getDefaultLlmModel(provider: SelfHostedLlmProvider): string {
+  return DEFAULT_LLM_MODELS[provider];
+}
+
+export function getLlmProviderLabel(provider: SelfHostedLlmProvider): string {
+  switch (provider) {
+    case "anthropic":
+      return "Anthropic";
+    case "openai":
+      return "OpenAI";
+    case "ollama":
+      return "Ollama";
+  }
+}
+
+export function resolveSelfHostedLlmConfig(input: Partial<RayConfig>) {
+  const provider =
+    normalizeProvider(input.llmProvider) ||
+    (input.anthropicKey ? "anthropic" : "anthropic");
+  const model = input.llmModel || input.model || getDefaultLlmModel(provider);
+  const apiKey =
+    input.llmApiKey ||
+    (provider === "anthropic" ? input.anthropicKey || "" : "");
+  const baseUrl =
+    input.llmBaseUrl ||
+    (provider === "ollama" ? DEFAULT_OLLAMA_BASE_URL : "");
+
+  return { provider, model, apiKey, baseUrl };
+}
+
+export function hasSelfHostedLlmConfig(input: Partial<RayConfig> = config): boolean {
+  const resolved = resolveSelfHostedLlmConfig(input);
+  if (!resolved.model) return false;
+  if (resolved.provider === "ollama") return true;
+  return !!resolved.apiKey;
+}
 
 export function useManaged(): boolean {
   return !!config.rayApiKey;
@@ -60,10 +115,21 @@ function loadFileConfig(): Partial<RayConfig> {
 
 function buildConfig(): RayConfig {
   const file = loadFileConfig();
+  const legacyAnthropicKey = file.anthropicKey || process.env.ANTHROPIC_API_KEY || "";
+  const llmProvider =
+    normalizeProvider(file.llmProvider || process.env.RAY_LLM_PROVIDER) ||
+    (legacyAnthropicKey ? "anthropic" : "anthropic");
+  const llmModel =
+    file.llmModel ||
+    process.env.RAY_LLM_MODEL ||
+    file.model ||
+    process.env.RAY_MODEL ||
+    getDefaultLlmModel(llmProvider);
+
   return {
-    anthropicKey: file.anthropicKey || process.env.ANTHROPIC_API_KEY || "",
+    anthropicKey: legacyAnthropicKey,
     rayApiKey: file.rayApiKey || process.env.RAY_API_KEY || "",
-    model: file.model || process.env.RAY_MODEL || "claude-sonnet-4-6",
+    model: file.model || process.env.RAY_MODEL || llmModel,
     displayLocale:
       file.displayLocale ||
       process.env.RAY_DISPLAY_LOCALE ||
@@ -73,6 +139,16 @@ function buildConfig(): RayConfig {
       file.displayCurrency ||
       process.env.RAY_DISPLAY_CURRENCY ||
       "",
+    llmProvider,
+    llmApiKey:
+      file.llmApiKey ||
+      process.env.RAY_LLM_API_KEY ||
+      (llmProvider === "anthropic" ? legacyAnthropicKey : ""),
+    llmBaseUrl:
+      file.llmBaseUrl ||
+      process.env.RAY_LLM_BASE_URL ||
+      (llmProvider === "ollama" ? DEFAULT_OLLAMA_BASE_URL : ""),
+    llmModel,
     plaidClientId: file.plaidClientId || process.env.PLAID_CLIENT_ID || "",
     plaidSecret: file.plaidSecret || process.env.PLAID_SECRET || "",
     plaidEnv: file.plaidEnv || process.env.PLAID_ENV || "production",
@@ -92,7 +168,7 @@ function buildConfig(): RayConfig {
 export const config = buildConfig();
 
 export function isConfigured(): boolean {
-  return !!config.anthropicKey || !!config.rayApiKey;
+  return useManaged() || hasSelfHostedLlmConfig(config);
 }
 
 export function saveConfig(partial: Partial<RayConfig>): void {

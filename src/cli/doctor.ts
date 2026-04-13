@@ -3,7 +3,7 @@ import { execSync } from "child_process";
 import { platform, homedir } from "os";
 import { resolve } from "path";
 import chalk from "chalk";
-import { config, getConfigPath, isConfigured, useManaged } from "../config.js";
+import { config, getConfigPath, getLlmProviderLabel, isConfigured, resolveSelfHostedLlmConfig, useManaged } from "../config.js";
 import { padColumns, colors } from "./format.js";
 
 interface Check {
@@ -71,7 +71,12 @@ export async function runDoctor(): Promise<void> {
       detail: valid ? "Ray managed (ray_***)" : "Key doesn't start with ray_ — may be invalid",
     });
   } else {
-    checks.push({ label: "Authentication", status: "ok", detail: "Self-hosted (Anthropic key)" });
+    const llm = resolveSelfHostedLlmConfig(config);
+    checks.push({
+      label: "Authentication",
+      status: "ok",
+      detail: `Self-hosted (${getLlmProviderLabel(llm.provider)} · ${llm.model})`,
+    });
   }
 
   // ── Database ──

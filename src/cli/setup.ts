@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
-import { config, saveConfig, getConfigPath, isConfigured, useManaged, RAY_PROXY_BASE } from "../config.js";
+import { config, saveConfig, getConfigPath, isConfigured, useManaged, RAY_PROXY_BASE, DEFAULT_OLLAMA_BASE_URL, getDefaultLlmModel, type RayConfig, type SelfHostedLlmProvider } from "../config.js";
 import { heading, dim } from "./format.js";
 
 function stepHeader(current: number, total: number): string {
@@ -14,6 +14,74 @@ const theme = {
     highlight: (text: string) => chalk.yellowBright(text),
   },
 };
+
+const SELF_HOSTED_PROVIDER_CHOICES: { name: string; value: SelfHostedLlmProvider }[] = [
+  { name: "Anthropic", value: "anthropic" },
+  { name: "OpenAI", value: "openai" },
+  { name: "Ollama", value: "ollama" },
+];
+
+function getModelChoices(provider: SelfHostedLlmProvider): { name: string; value: string }[] | null {
+  switch (provider) {
+    case "anthropic":
+      return [
+        { name: "Claude Sonnet 4.6 (recommended)", value: "claude-sonnet-4-6" },
+        { name: "Claude Haiku 4.5 (faster, cheaper)", value: "claude-haiku-4-5" },
+        { name: "Claude Opus 4.6 (most capable)", value: "claude-opus-4-6" },
+      ];
+    case "openai":
+      return [
+        { name: "GPT-5 mini (recommended)", value: "gpt-5-mini" },
+        { name: "GPT-5.4", value: "gpt-5.4" },
+        { name: "GPT-5.4 mini", value: "gpt-5.4-mini" },
+      ];
+    case "ollama":
+      return null;
+  }
+}
+
+export interface SelfHostedSetupAnswers {
+  userName: string;
+  llmProvider: SelfHostedLlmProvider;
+  llmApiKey?: string;
+  llmBaseUrl?: string;
+  llmModel: string;
+  plaidClientId?: string;
+  plaidSecret?: string;
+  bridgeClientId?: string;
+  bridgeClientSecret?: string;
+  dbEncryptionKey?: string;
+}
+
+export function buildSelfHostedConfigUpdate(
+  answers: SelfHostedSetupAnswers,
+  currentConfig: RayConfig,
+  generateKey: () => string,
+): Partial<RayConfig> {
+  const llmApiKey = answers.llmProvider === "ollama" ? "" : answers.llmApiKey || "";
+  const llmBaseUrl = answers.llmProvider === "ollama"
+    ? answers.llmBaseUrl || DEFAULT_OLLAMA_BASE_URL
+    : "";
+
+  return {
+    userName: answers.userName,
+    anthropicKey: answers.llmProvider === "anthropic" ? llmApiKey : "",
+    rayApiKey: "",
+    model: answers.llmModel,
+    llmProvider: answers.llmProvider,
+    llmApiKey,
+    llmBaseUrl,
+    llmModel: answers.llmModel,
+    plaidClientId: answers.plaidClientId || "",
+    plaidSecret: answers.plaidSecret || "",
+    plaidEnv: "production",
+    bridgeClientId: answers.bridgeClientId || "",
+    bridgeClientSecret: answers.bridgeClientSecret || "",
+    bridgeDefaultExternalUserId: currentConfig.bridgeDefaultExternalUserId || "",
+    dbEncryptionKey: answers.dbEncryptionKey || generateKey(),
+    plaidTokenSecret: currentConfig.plaidTokenSecret || generateKey(),
+  };
+}
 
 export async function runSetup(): Promise<void> {
   const inquirer = (await import("inquirer")).default;
@@ -32,13 +100,13 @@ export async function runSetup(): Promise<void> {
 
   const { setupMode } = await inquirer.prompt([{theme,
     type: "list",
-    name: "setupMode",
-    message: "How would you like to set up Ray?",
-    choices: [
-      { name: "Quick setup — we handle the API keys, your data stays local", value: "managed" },
-      { name: "Bring your own keys — use your own Anthropic, Plaid, and/or Bridge credentials", value: "selfhosted" },
-    ],
-  }]);
+      name: "setupMode",
+      message: "How would you like to set up Ray?",
+      choices: [
+        { name: "Quick setup — we handle the API keys, your data stays local", value: "managed" },
+        { name: "Bring your own keys — use your own LLM provider and Plaid credentials", value: "selfhosted" },
+      ],
+    }]);
 
   let canLink = false;
 
@@ -103,6 +171,10 @@ export async function runSetup(): Promise<void> {
       rayApiKey,
       anthropicKey: "",
       model: "claude-sonnet-4-6",
+      llmProvider: "anthropic",
+      llmApiKey: "",
+      llmBaseUrl: "",
+      llmModel: "claude-sonnet-4-6",
       plaidClientId: "",
       plaidSecret: "",
       plaidEnv: "production",
@@ -116,7 +188,8 @@ export async function runSetup(): Promise<void> {
     canLink = true;
   } else {
     console.log(stepHeader(1, 4));
-    const answers = await inquirer.prompt([
+    const { generateKey } = await import("../db/encryption.js");
+    const { userName, llmProvider } = await inquirer.prompt([
       {
         theme,
         type: "input",
@@ -126,24 +199,60 @@ export async function runSetup(): Promise<void> {
       },
       {
         theme,
-        type: "password",
-        name: "anthropicKey",
-        message: "Anthropic API key:",
-        default: config.anthropicKey || undefined,
-        validate: (v: string) => v.length > 0 || "Required",
+        type: "list",
+        name: "llmProvider",
+        message: "LLM provider:",
+        choices: SELF_HOSTED_PROVIDER_CHOICES,
+        default: config.llmProvider,
       },
-      {
+    ]) as Pick<SelfHostedSetupAnswers, "userName" | "llmProvider">;
+
+    const modelChoices = getModelChoices(llmProvider);
+    const llmPrompts: any[] = [];
+
+    if (llmProvider !== "ollama") {
+      llmPrompts.push({
+        theme,
+        type: "password",
+        name: "llmApiKey",
+        message: `${SELF_HOSTED_PROVIDER_CHOICES.find(choice => choice.value === llmProvider)?.name} API key:`,
+        default: llmProvider === "anthropic" ? config.anthropicKey || config.llmApiKey || undefined : config.llmApiKey || undefined,
+        validate: (value: string) => value.length > 0 || "Required",
+      });
+    }
+
+    if (modelChoices) {
+      llmPrompts.push({
         theme,
         type: "list",
-        name: "model",
+        name: "llmModel",
         message: "AI model:",
-        choices: [
-          { name: "Claude Sonnet 4.6 (recommended)", value: "claude-sonnet-4-6" },
-          { name: "Claude Haiku 4.5 (faster, cheaper)", value: "claude-haiku-4-5" },
-          { name: "Claude Opus 4.6 (most capable)", value: "claude-opus-4-6" },
-        ],
-        default: config.model,
-      },
+        choices: modelChoices,
+        default: config.llmProvider === llmProvider ? config.llmModel : getDefaultLlmModel(llmProvider),
+      });
+    } else {
+      llmPrompts.push(
+        {
+          theme,
+          type: "input",
+          name: "llmModel",
+          message: "Ollama model:",
+          default: config.llmProvider === "ollama" ? config.llmModel : getDefaultLlmModel("ollama"),
+          validate: (value: string) => value.length > 0 || "Required",
+        },
+        {
+          theme,
+          type: "input",
+          name: "llmBaseUrl",
+          message: "Ollama base URL:",
+          default: config.llmProvider === "ollama" && config.llmBaseUrl ? config.llmBaseUrl : DEFAULT_OLLAMA_BASE_URL,
+          validate: (value: string) => value.length > 0 || "Required",
+        },
+      );
+    }
+
+    const providerAnswers = await inquirer.prompt(llmPrompts) as Pick<SelfHostedSetupAnswers, "llmApiKey" | "llmBaseUrl" | "llmModel">;
+    const plaidAnswers = await inquirer.prompt([
       {
         theme,
         type: "password",
@@ -179,28 +288,19 @@ export async function runSetup(): Promise<void> {
         message: "Database encryption key (enter to skip):",
         default: config.dbEncryptionKey || undefined,
       },
-    ]);
+    ]) as Pick<SelfHostedSetupAnswers, "plaidClientId" | "plaidSecret" | "bridgeClientId" | "bridgeClientSecret" | "dbEncryptionKey">;
 
-    const { generateKey } = await import("../db/encryption.js");
-
-    saveConfig({
-      userName: answers.userName,
-      anthropicKey: answers.anthropicKey,
-      rayApiKey: "",
-      model: answers.model,
-      plaidClientId: answers.plaidClientId || "",
-      plaidSecret: answers.plaidSecret || "",
-      plaidEnv: "production",
-      bridgeClientId: answers.bridgeClientId || "",
-      bridgeClientSecret: answers.bridgeClientSecret || "",
-      bridgeDefaultExternalUserId: config.bridgeDefaultExternalUserId || "",
-      dbEncryptionKey: answers.dbEncryptionKey || generateKey(),
-      plaidTokenSecret: config.plaidTokenSecret || generateKey(),
-    });
+    saveConfig(
+      buildSelfHostedConfigUpdate(
+        { userName, llmProvider, ...providerAnswers, ...plaidAnswers },
+        config,
+        generateKey,
+      ),
+    );
 
     canLink = !!(
-      (answers.plaidClientId && answers.plaidSecret) ||
-      (answers.bridgeClientId && answers.bridgeClientSecret)
+      (plaidAnswers.plaidClientId && plaidAnswers.plaidSecret) ||
+      (plaidAnswers.bridgeClientId && plaidAnswers.bridgeClientSecret)
     );
   }
 
