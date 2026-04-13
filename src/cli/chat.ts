@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { config } from "../config.js";
+import { canLinkAnyProvider, config } from "../config.js";
 import { banner, DISCLAIMER, formatResponse, formatDuration, formatError } from "./format.js";
 import type { ProgressCallback } from "../ai/agent.js";
 
@@ -274,8 +274,8 @@ export async function startChat(): Promise<void> {
   // Require at least one linked account
   const hasAccounts = db.prepare("SELECT COUNT(*) as count FROM accounts").get() as { count: number };
   if (hasAccounts.count === 0) {
-    if (!config.plaidClientId || !config.plaidSecret) {
-      console.log(chalk.yellow("No accounts linked. Add Plaid credentials via 'ray setup', then run 'ray link'.\n"));
+    if (!canLinkAnyProvider()) {
+      console.log(chalk.yellow("No accounts linked. Add Plaid and/or Bridge credentials via 'ray setup', then run 'ray link'.\n"));
       return;
     }
     console.log(chalk.yellow("No accounts linked yet. Let's connect one first.\n"));
@@ -297,7 +297,7 @@ export async function startChat(): Promise<void> {
     try {
       const response = await handleMessage(db, "I just connected my financial accounts. Help me set up my financial profile.");
       spinner.stop();
-      console.log(`\n${response}\n`);
+      console.log(`\n${formatResponse(response)}\n`);
     } catch (err: any) {
       spinner.stop();
       console.error(formatError(err, "Onboarding error"));

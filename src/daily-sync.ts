@@ -1,20 +1,12 @@
 import type BetterSqlite3 from "libsql";
 type Database = BetterSqlite3.Database;
-import {
-  syncTransactions,
-  syncBalances,
-  syncInvestments,
-  syncInvestmentTransactions,
-  syncLiabilities,
-  syncRecurring,
-  isProductNotSupported,
-  refreshProducts,
-} from "./plaid/sync.js";
 import { calculateDailyScore, checkAchievements } from "./scoring/index.js";
-import { decryptPlaidToken } from "./db/encryption.js";
-import { config } from "./config.js";
 import { institutionName } from "./cli/format.js";
 import { refreshPropertyValues, hasListingUrls } from "./property.js";
+import { getProvider } from "./providers/index.js";
+import type { InstitutionRecord, ProviderKey } from "./providers/types.js";
+import { parseProviderState } from "./providers/state.js";
+import { describeBridgeProviderState, type BridgeProviderState } from "./providers/bridge/status.js";
 
 export interface SyncResult {
   transactionsAdded: number;
@@ -24,15 +16,23 @@ export interface SyncResult {
 /** Run the daily sync for a single database */
 export async function runDailySync(db: Database): Promise<SyncResult> {
   const institutions = db
-    .prepare(`SELECT item_id, access_token, name, products, cursor, primary_color FROM institutions`)
+    .prepare(
+      `SELECT item_id, provider, access_token, provider_user_id, provider_state, name, products, cursor, primary_color, logo, created_at
+       FROM institutions`,
+    )
     .all() as {
-    item_id: string;
-    access_token: string;
-    name: string;
-    products: string;
-    cursor: string | null;
-    primary_color: string | null;
-  }[];
+      item_id: string;
+      provider?: ProviderKey;
+      access_token: string;
+      provider_user_id: string | null;
+      provider_state: string;
+      name: string;
+      products: string;
+      cursor: string | null;
+      primary_color: string | null;
+      logo: string | null;
+      created_at: string | null;
+    }[];
 
   if (institutions.length === 0) {
     console.log("No linked institutions.");
@@ -48,88 +48,26 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
       continue;
     }
 
-    // Decrypt the stored access token
-    let accessToken: string;
-    try {
-      if (!config.plaidTokenSecret) {
-        console.error(`  Skipping ${inst.name}: no plaidTokenSecret configured`);
-        continue;
-      }
-      accessToken = decryptPlaidToken(inst.access_token, config.plaidTokenSecret);
-    } catch {
-      console.error(`  Skipping ${inst.name}: failed to decrypt access token (wrong key or corrupt data)`);
+    const providerKey = inst.provider || "plaid";
+    const provider = getProvider(providerKey);
+
+    if (!provider.isConfigured()) {
+      console.error(`  Skipping ${inst.name}: ${provider.missingConfigMessage()}`);
       continue;
     }
 
-    let products: string[] = JSON.parse(inst.products);
-
-    // Refresh products list from Plaid if needed
-    try {
-      products = await refreshProducts(db, inst.item_id, accessToken);
-    } catch {
-      // Non-fatal — use stored products
-    }
-
-    console.log(`Syncing: ${institutionName(inst.name, inst.primary_color)} (${products.join(", ")})`);
+    console.log(`Syncing: ${institutionName(inst.name, inst.primary_color)} (${provider.displayName})`);
 
     try {
-      instSynced++;
+      const result = await provider.syncInstitution(db, inst as InstitutionRecord);
+      instSynced += result.synced ? 1 : 0;
+      totalAdded += result.transactionsAdded;
 
-      // Always sync balances
-      const accountCount = await syncBalances(db, accessToken);
-      console.log(`  Accounts: ${accountCount}`);
-
-      // Sync transactions if available
-      if (products.includes("transactions")) {
-        const txResult = await syncTransactions(
-          db,
-          inst.item_id,
-          accessToken,
-          inst.cursor
-        );
-        totalAdded += txResult.added;
-        console.log(
-          `  Transactions: +${txResult.added} ~${txResult.modified} -${txResult.removed}`
-        );
-      }
-
-      // Sync investments
-      if (products.includes("investments")) {
-        try {
-          const invResult = await syncInvestments(db, accessToken);
-          console.log(
-            `  Investments: ${invResult.holdings} holdings, ${invResult.securities} securities`
-          );
-        } catch (e) {
-          if (!isProductNotSupported(e)) console.error(`  Investments error: ${(e as Error).message}`);
-        }
-
-        try {
-          const invTxResult = await syncInvestmentTransactions(db, accessToken);
-          console.log(`  Investment transactions: ${invTxResult.transactions}`);
-        } catch (e) {
-          if (!isProductNotSupported(e)) console.error(`  Investment transactions error: ${(e as Error).message}`);
-        }
-      }
-
-      // Sync liabilities
-      if (products.includes("liabilities")) {
-        try {
-          await syncLiabilities(db, accessToken);
-          console.log(`  Liabilities: synced`);
-        } catch (e) {
-          if (!isProductNotSupported(e)) console.error(`  Liabilities error: ${(e as Error).message}`);
-        }
-      }
-
-      // Sync recurring transaction streams
-      if (products.includes("transactions")) {
-        try {
-          const recResult = await syncRecurring(db, accessToken);
-          console.log(`  Recurring: ${recResult.outflows} outflows, ${recResult.inflows} inflows`);
-        } catch (e) {
-          if (!isProductNotSupported(e)) console.error(`  Recurring error: ${(e as Error).message}`);
-        }
+      if (result.message) console.log(`  ${result.message}`);
+      if (result.reconnectRequired && providerKey === "bridge") {
+        const state = parseProviderState<BridgeProviderState>(inst.provider_state);
+        const reconnectMessage = describeBridgeProviderState(state);
+        if (reconnectMessage) console.log(`  ${reconnectMessage}`);
       }
     } catch (err: any) {
       console.error(`  Error syncing ${inst.name}: ${err.message}`);

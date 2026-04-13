@@ -91,6 +91,22 @@ export async function runDoctor(): Promise<void> {
       } else {
         const count = (db.prepare("SELECT COUNT(*) as n FROM transactions").get() as { n: number }).n;
         checks.push({ label: "Database", status: "ok", detail: `${count.toLocaleString()} transactions, ${tableNames.length} tables` });
+
+        const bridgeRows = db.prepare(
+          `SELECT name, provider_state FROM institutions WHERE provider = 'bridge'`,
+        ).all() as { name: string; provider_state: string | null }[];
+        if (bridgeRows.length > 0) {
+          const { parseProviderState } = await import("../providers/state.js");
+          const { describeBridgeProviderState } = await import("../providers/bridge/status.js");
+          const blocked = bridgeRows.filter(row => !!describeBridgeProviderState(parseProviderState(row.provider_state)));
+          checks.push({
+            label: "Bridge items",
+            status: blocked.length > 0 ? "warn" : "ok",
+            detail: blocked.length > 0
+              ? `${blocked.length}/${bridgeRows.length} item(s) need reconnect`
+              : `${bridgeRows.length} linked item(s) look healthy`,
+          });
+        }
       }
     } catch (err: any) {
       checks.push({ label: "Database", status: "fail", detail: err.message?.slice(0, 80) || "Cannot open" });
@@ -121,6 +137,14 @@ export async function runDoctor(): Promise<void> {
     checks.push({ label: "Banking (Plaid)", status: "ok", detail: `Self-hosted (${config.plaidEnv})` });
   } else {
     checks.push({ label: "Banking (Plaid)", status: "warn", detail: `Not configured. Run ${chalk.bold("ray link")}` });
+  }
+
+  if (useManaged()) {
+    checks.push({ label: "Banking (Bridge)", status: "warn", detail: "Unavailable in managed mode" });
+  } else if (config.bridgeClientId && config.bridgeClientSecret) {
+    checks.push({ label: "Banking (Bridge)", status: "ok", detail: "Self-hosted (BYOK)" });
+  } else {
+    checks.push({ label: "Banking (Bridge)", status: "warn", detail: `Optional. Add via ${chalk.bold("ray setup")}` });
   }
 
   // ── Sync schedule ──

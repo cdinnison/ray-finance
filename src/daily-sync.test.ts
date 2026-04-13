@@ -26,7 +26,15 @@ vi.mock("./scoring/index.js", () => ({
 
 // Mock config
 vi.mock("./config.js", () => ({
-  config: { plaidTokenSecret: "test-secret" },
+  config: {
+    plaidTokenSecret: "test-secret",
+    plaidClientId: "plaid-client-id",
+    plaidSecret: "plaid-secret",
+    rayApiKey: "",
+    bridgeClientId: "",
+    bridgeClientSecret: "",
+  },
+  useManaged: vi.fn().mockReturnValue(false),
 }));
 
 import { runDailySync } from "./daily-sync.js";

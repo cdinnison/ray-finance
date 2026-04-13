@@ -36,7 +36,7 @@ export async function runSetup(): Promise<void> {
     message: "How would you like to set up Ray?",
     choices: [
       { name: "Quick setup — we handle the API keys, your data stays local", value: "managed" },
-      { name: "Bring your own keys — use your own Anthropic and Plaid credentials", value: "selfhosted" },
+      { name: "Bring your own keys — use your own Anthropic, Plaid, and/or Bridge credentials", value: "selfhosted" },
     ],
   }]);
 
@@ -106,6 +106,9 @@ export async function runSetup(): Promise<void> {
       plaidClientId: "",
       plaidSecret: "",
       plaidEnv: "production",
+      bridgeClientId: "",
+      bridgeClientSecret: "",
+      bridgeDefaultExternalUserId: "",
       dbEncryptionKey: config.dbEncryptionKey || generateKey(),
       plaidTokenSecret: config.plaidTokenSecret || generateKey(),
     });
@@ -158,6 +161,20 @@ export async function runSetup(): Promise<void> {
       {
         theme,
         type: "password",
+        name: "bridgeClientId",
+        message: "Bridge client ID (enter to skip):",
+        default: config.bridgeClientId || undefined,
+      },
+      {
+        theme,
+        type: "password",
+        name: "bridgeClientSecret",
+        message: "Bridge client secret (enter to skip):",
+        default: config.bridgeClientSecret || undefined,
+      },
+      {
+        theme,
+        type: "password",
         name: "dbEncryptionKey",
         message: "Database encryption key (enter to skip):",
         default: config.dbEncryptionKey || undefined,
@@ -174,11 +191,17 @@ export async function runSetup(): Promise<void> {
       plaidClientId: answers.plaidClientId || "",
       plaidSecret: answers.plaidSecret || "",
       plaidEnv: "production",
+      bridgeClientId: answers.bridgeClientId || "",
+      bridgeClientSecret: answers.bridgeClientSecret || "",
+      bridgeDefaultExternalUserId: config.bridgeDefaultExternalUserId || "",
       dbEncryptionKey: answers.dbEncryptionKey || generateKey(),
       plaidTokenSecret: config.plaidTokenSecret || generateKey(),
     });
 
-    canLink = !!(answers.plaidClientId && answers.plaidSecret);
+    canLink = !!(
+      (answers.plaidClientId && answers.plaidSecret) ||
+      (answers.bridgeClientId && answers.bridgeClientSecret)
+    );
   }
 
   // Ensure data directory exists

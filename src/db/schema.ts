@@ -5,6 +5,9 @@ export function migrate(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS institutions (
       item_id TEXT PRIMARY KEY,
       access_token TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'plaid',
+      provider_user_id TEXT,
+      provider_state TEXT NOT NULL DEFAULT '{}',
       name TEXT NOT NULL,
       products TEXT NOT NULL DEFAULT '[]',
       cursor TEXT,
@@ -222,6 +225,15 @@ export function migrate(db: Database.Database): void {
   if (!instCols.some(c => c.name === "logo")) {
     db.exec(`ALTER TABLE institutions ADD COLUMN logo TEXT`);
     db.exec(`ALTER TABLE institutions ADD COLUMN primary_color TEXT`);
+  }
+  if (!instCols.some(c => c.name === "provider")) {
+    db.exec(`ALTER TABLE institutions ADD COLUMN provider TEXT NOT NULL DEFAULT 'plaid'`);
+  }
+  if (!instCols.some(c => c.name === "provider_user_id")) {
+    db.exec(`ALTER TABLE institutions ADD COLUMN provider_user_id TEXT`);
+  }
+  if (!instCols.some(c => c.name === "provider_state")) {
+    db.exec(`ALTER TABLE institutions ADD COLUMN provider_state TEXT NOT NULL DEFAULT '{}'`);
   }
 
   // Migrate: rename goals.deadline -> target_date for existing databases

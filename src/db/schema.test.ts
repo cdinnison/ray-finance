@@ -50,4 +50,39 @@ describe("migrate", () => {
     migrate(db);
     expect(() => migrate(db)).not.toThrow();
   });
+
+  it("adds provider-aware institution columns to fresh databases", () => {
+    const db = freshDb();
+    migrate(db);
+
+    const columns = db.prepare(`PRAGMA table_info(institutions)`).all() as { name: string }[];
+    const names = columns.map(column => column.name);
+
+    expect(names).toContain("provider");
+    expect(names).toContain("provider_user_id");
+    expect(names).toContain("provider_state");
+  });
+
+  it("migrates legacy institutions table to include provider columns", () => {
+    const db = freshDb();
+    db.exec(`
+      CREATE TABLE institutions (
+        item_id TEXT PRIMARY KEY,
+        access_token TEXT NOT NULL,
+        name TEXT NOT NULL,
+        products TEXT NOT NULL DEFAULT '[]',
+        cursor TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+
+    migrate(db);
+
+    const columns = db.prepare(`PRAGMA table_info(institutions)`).all() as { name: string }[];
+    const names = columns.map(column => column.name);
+
+    expect(names).toContain("provider");
+    expect(names).toContain("provider_user_id");
+    expect(names).toContain("provider_state");
+  });
 });

@@ -5,6 +5,7 @@ import {
   getGoals, compareSpending, formatMoney, categoryLabel,
 } from "../queries/index.js";
 import { getLatestScore } from "../scoring/index.js";
+import { formatCurrencyAmount } from "../currency.js";
 
 const MAX_CHARS = 6000;
 
@@ -449,7 +450,7 @@ export function cliBriefing(db: Database.Database): string | null {
 }
 
 function fmtMoney(n: number): string {
-  return "$" + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  return formatCurrencyAmount(n, { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
 function miniBar(pct: number): string {
