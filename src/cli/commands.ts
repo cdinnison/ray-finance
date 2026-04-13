@@ -408,18 +408,40 @@ export async function runRemove(): Promise<void> {
   const readline = await import("readline");
   const db = getDb();
 
-  const accounts = getManualAccounts(db);
-  if (accounts.length === 0) {
-    console.log("\nNo manual accounts. Use 'ray add' to create one.");
+  type Entry = { kind: "institution"; item_id: string; name: string } | { kind: "manual"; account_id: string; name: string; balance: number; type: string; listing_url: string | null };
+
+  const entries: Entry[] = [];
+
+  // Linked institutions (exclude manual-assets)
+  const institutions = db.prepare(
+    `SELECT item_id, name FROM institutions WHERE item_id != 'manual-assets' ORDER BY created_at`
+  ).all() as { item_id: string; name: string }[];
+  for (const inst of institutions) {
+    entries.push({ kind: "institution", item_id: inst.item_id, name: inst.name });
+  }
+
+  // Manual accounts
+  const manuals = getManualAccounts(db);
+  for (const a of manuals) {
+    entries.push({ kind: "manual", account_id: a.account_id, name: a.name, balance: a.current_balance, type: a.type, listing_url: a.listing_url });
+  }
+
+  if (entries.length === 0) {
+    console.log("\nNo accounts to remove. Use 'ray link' or 'ray add' to add one.");
     return;
   }
 
-  console.log(`\n${heading("Manual Accounts")}\n`);
-  for (let i = 0; i < accounts.length; i++) {
-    const a = accounts[i];
-    const typeLabel = a.type === "loan" || a.type === "credit" ? "liability" : "asset";
-    const url = a.listing_url ? dim(` — ${a.listing_url}`) : "";
-    console.log(`  ${dim(`${i + 1}.`)} ${a.name}  ${rawFormatMoney(a.current_balance)} (${typeLabel})${url}`);
+  console.log(`\n${heading("Accounts")}\n`);
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (e.kind === "institution") {
+      const acctCount = (db.prepare(`SELECT COUNT(*) as c FROM accounts WHERE item_id = ?`).get(e.item_id) as { c: number }).c;
+      console.log(`  ${dim(`${i + 1}.`)} ${e.name}  ${dim(`(${acctCount} account${acctCount !== 1 ? "s" : ""}, linked)`)}`);
+    } else {
+      const typeLabel = e.type === "loan" || e.type === "credit" ? "liability" : "asset";
+      const url = e.listing_url ? dim(` — ${e.listing_url}`) : "";
+      console.log(`  ${dim(`${i + 1}.`)} ${e.name}  ${rawFormatMoney(e.balance)} (${typeLabel})${url}`);
+    }
   }
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -427,10 +449,25 @@ export async function runRemove(): Promise<void> {
   rl.close();
 
   const idx = parseInt(answer, 10) - 1;
-  if (isNaN(idx) || idx < 0 || idx >= accounts.length) return;
+  if (isNaN(idx) || idx < 0 || idx >= entries.length) return;
 
-  removeManualAccount(db, accounts[idx].account_id);
-  console.log(chalk.green(`\n  Removed ${accounts[idx].name}.`));
+  const entry = entries[idx];
+  if (entry.kind === "manual") {
+    removeManualAccount(db, entry.account_id);
+  } else {
+    // Remove all data for this institution
+    const accounts = db.prepare(`SELECT account_id FROM accounts WHERE item_id = ?`).all(entry.item_id) as { account_id: string }[];
+    for (const acct of accounts) {
+      db.prepare(`DELETE FROM transactions WHERE account_id = ?`).run(acct.account_id);
+      db.prepare(`DELETE FROM holdings WHERE account_id = ?`).run(acct.account_id);
+      db.prepare(`DELETE FROM investment_transactions WHERE account_id = ?`).run(acct.account_id);
+      db.prepare(`DELETE FROM liabilities WHERE account_id = ?`).run(acct.account_id);
+      db.prepare(`DELETE FROM recurring WHERE account_id = ?`).run(acct.account_id);
+    }
+    db.prepare(`DELETE FROM accounts WHERE item_id = ?`).run(entry.item_id);
+    db.prepare(`DELETE FROM institutions WHERE item_id = ?`).run(entry.item_id);
+  }
+  console.log(chalk.green(`\n  Removed ${entry.name}.`));
   console.log();
 }
 

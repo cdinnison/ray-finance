@@ -81,7 +81,7 @@ program
 
 program
   .command("remove")
-  .description("Remove a manual account")
+  .description("Remove a linked bank or manual account")
   .action(async () => {
     ensureConfigured();
     const { runRemove } = await import("./commands.js");
@@ -216,23 +216,29 @@ program
     const open = (await import("open")).default;
     console.log("Opening billing portal...");
     try {
-      const resp = await fetch(`${RAY_PROXY_BASE.replace("/v1", "")}/stripe/portal`, {
+      const resp = await fetch(`${RAY_PROXY_BASE}/stripe/portal`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "Authorization": `Bearer ${config.rayApiKey}`,
         },
       });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        const msg = (() => { try { return JSON.parse(text).error; } catch { return text; } })();
+        console.error(`Could not open billing portal (${resp.status}): ${msg || "unknown error"}`);
+        return;
+      }
       const { url } = await resp.json() as { url: string };
       // Only open URLs from trusted domains
       const parsed = new URL(url);
       if (!parsed.hostname.endsWith("stripe.com") && !parsed.hostname.endsWith("rayfinance.app")) {
-        console.error("Unexpected billing URL. Visit https://rayfinance.app/billing");
+        console.error("Unexpected billing URL.");
       } else {
         await open(url);
       }
-    } catch {
-      console.error("Could not open billing portal. Visit https://rayfinance.app/billing");
+    } catch (err) {
+      console.error("Could not open billing portal:", (err as Error).message);
     }
   });
 
@@ -276,7 +282,7 @@ program.configureHelp({
     { name: "setup", desc: "Configure Ray (API keys, preferences)" },
     { name: "link", desc: "Link a new financial account via Plaid" },
     { name: "add", desc: "Add a manual account (home, car, crypto, etc.)" },
-    { name: "remove", desc: "Remove a manual account" },
+    { name: "remove", desc: "Remove a linked bank or manual account" },
     { name: "sync", desc: "Sync transactions from linked banks" },
     { name: "accounts", desc: "Show linked accounts and balances" },
     { name: "status", desc: "Show financial overview" },

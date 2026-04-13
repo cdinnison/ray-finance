@@ -396,7 +396,7 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
     case "set_budget": {
       db.prepare(
         `INSERT INTO budgets (category, monthly_limit) VALUES (?, ?)
-         ON CONFLICT(category) DO UPDATE SET monthly_limit = excluded.monthly_limit`
+         ON CONFLICT(category, period) DO UPDATE SET monthly_limit = excluded.monthly_limit`
       ).run(toolInput.category, toolInput.monthly_limit);
       return `Budget set: ${categoryLabel(toolInput.category)} at ${formatMoney(toolInput.monthly_limit)}/month`;
     }
