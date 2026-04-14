@@ -217,7 +217,7 @@ function SocialProof() {
 
       {/* Product Hunt — hidden on mobile */}
       <a
-        href="https://www.producthunt.com/products/ray-7?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-ray-7"
+        href="https://www.producthunt.com/products/ray-7?embed=true&utm_source=badge-top-post-badge&utm_medium=badge&utm_campaign=badge-ray-7"
         target="_blank"
         rel="noopener noreferrer"
         className="hidden transition-opacity hover:opacity-80 sm:block"
@@ -226,7 +226,7 @@ function SocialProof() {
           alt="Ray - Your personal CFO in the terminal | Product Hunt"
           width="180"
           height="39"
-          src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1121525&theme=light&t=1776009822210"
+          src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=1121525&theme=light&period=daily&t=1776122621761"
         />
       </a>
     </div>
