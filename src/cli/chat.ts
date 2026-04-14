@@ -3,232 +3,32 @@ import { config } from "../config.js";
 import { banner, DISCLAIMER, formatResponse, formatDuration, formatError } from "./format.js";
 import type { ProgressCallback } from "../ai/agent.js";
 
-/** Raw-mode line reader that renders content below the cursor while waiting for input */
-function rawReadLine(prompt: string, belowLines: string[]): Promise<string> {
+async function promptLine(prompt: string, linesAbovePrompt: string[]): Promise<string> {
+  const { createInterface } = await import("readline");
+
+  if (linesAbovePrompt.length > 0) {
+    console.log(linesAbovePrompt.join("\n"));
+  }
+
   return new Promise((resolve) => {
-    let buf = "";
-    let cursor = 0; // cursor position within buf
-    const out = process.stdout;
-    const promptLen = stripAnsi(prompt).length;
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      historySize: 1000,
+      removeHistoryDuplicates: true,
+    });
 
-    // Redraws the buffer from the prompt onward and repositions the cursor
-    const redraw = () => {
-      out.write("\r" + prompt + buf + "\x1b[K"); // clear to end of line
-      // Move cursor back to the correct position
-      const back = buf.length - cursor;
-      if (back > 0) out.write(`\x1b[${back}D`);
+    let settled = false;
+    const finish = (value: string) => {
+      if (settled) return;
+      settled = true;
+      rl.close();
+      resolve(value);
     };
 
-    // Find the start of the previous word boundary
-    const wordLeft = () => {
-      let p = cursor;
-      while (p > 0 && buf[p - 1] === " ") p--;       // skip trailing spaces
-      while (p > 0 && buf[p - 1] !== " ") p--;        // skip word chars
-      return p;
-    };
-
-    // Find the end of the next word boundary
-    const wordRight = () => {
-      let p = cursor;
-      while (p < buf.length && buf[p] !== " ") p++;   // skip word chars
-      while (p < buf.length && buf[p] === " ") p++;    // skip trailing spaces
-      return p;
-    };
-
-    // Render: prompt on current line, then content below, then move cursor back
-    out.write(prompt);
-    if (belowLines.length > 0) {
-      out.write("\n" + belowLines.join("\n"));
-      // Move cursor back up to the prompt line and to the end of prompt text
-      out.write(`\x1b[${belowLines.length}A`);
-      out.write("\r" + prompt);
-    }
-
-    process.stdin.setRawMode!(true);
-    process.stdin.resume();
-    process.stdin.setEncoding("utf8");
-
-    const cleanup = () => {
-      process.stdin.setRawMode!(false);
-      process.stdin.removeListener("data", onData);
-      process.stdin.pause();
-    };
-
-    const onData = (chunk: string) => {
-      for (let i = 0; i < chunk.length; i++) {
-        const code = chunk.charCodeAt(i);
-
-        // Ctrl+C / Ctrl+D
-        if (code === 3 || code === 4) {
-          cleanup();
-          out.write("\n");
-          resolve("\x03");
-          return;
-        }
-
-        // Ctrl+A — beginning of line
-        if (code === 1) {
-          if (cursor > 0) { out.write(`\x1b[${cursor}D`); cursor = 0; }
-          continue;
-        }
-
-        // Ctrl+E — end of line
-        if (code === 5) {
-          if (cursor < buf.length) { out.write(`\x1b[${buf.length - cursor}C`); cursor = buf.length; }
-          continue;
-        }
-
-        // Ctrl+K — delete from cursor to end of line
-        if (code === 11) {
-          buf = buf.slice(0, cursor);
-          out.write("\x1b[K");
-          continue;
-        }
-
-        // Ctrl+U — delete from cursor to beginning of line
-        if (code === 21) {
-          buf = buf.slice(cursor);
-          cursor = 0;
-          redraw();
-          continue;
-        }
-
-        // Ctrl+W — delete word backward
-        if (code === 23) {
-          if (cursor > 0) {
-            const target = wordLeft();
-            buf = buf.slice(0, target) + buf.slice(cursor);
-            cursor = target;
-            redraw();
-          }
-          continue;
-        }
-
-        // Enter
-        if (code === 13) {
-          cleanup();
-          // Move cursor to end of buf first
-          if (cursor < buf.length) out.write(`\x1b[${buf.length - cursor}C`);
-          // Move past the below-content lines, then newline
-          for (let j = 0; j < belowLines.length; j++) out.write("\x1b[1B");
-          out.write("\n");
-          resolve(buf);
-          return;
-        }
-
-        // Backspace
-        if (code === 127 || code === 8) {
-          if (cursor > 0) {
-            buf = buf.slice(0, cursor - 1) + buf.slice(cursor);
-            cursor--;
-            redraw();
-          }
-          continue;
-        }
-
-        // Escape sequences (arrow keys, Option+key, etc.)
-        if (code === 27) {
-          // Option+Backspace — ESC followed by DEL (0x7f)
-          if (i + 1 < chunk.length && chunk.charCodeAt(i + 1) === 127) {
-            i++; // consume the DEL
-            if (cursor > 0) {
-              const target = wordLeft();
-              buf = buf.slice(0, target) + buf.slice(cursor);
-              cursor = target;
-              redraw();
-            }
-            continue;
-          }
-
-          // Option+b / Option+f — ESC followed by 'b' or 'f'
-          if (i + 1 < chunk.length && chunk[i + 1] === "b") {
-            i++;
-            const target = wordLeft();
-            if (target < cursor) { out.write(`\x1b[${cursor - target}D`); cursor = target; }
-            continue;
-          }
-          if (i + 1 < chunk.length && chunk[i + 1] === "f") {
-            i++;
-            const target = wordRight();
-            if (target > cursor) { out.write(`\x1b[${target - cursor}C`); cursor = target; }
-            continue;
-          }
-
-          if (i + 1 < chunk.length && chunk[i + 1] === "[") {
-            i += 2; // skip past ESC [
-            // Collect any intermediate bytes (modifiers like "1;3")
-            let seq = "";
-            while (i < chunk.length && chunk.charCodeAt(i) < 64) {
-              seq += chunk[i];
-              i++;
-            }
-            if (i < chunk.length) {
-              const final = chunk[i];
-              // Modifier keys: ;3 = Option, ;5 = Ctrl, ;9 = Cmd (Kitty protocol)
-              const isWordMod = seq === "1;3" || seq === "1;5" || seq === "1;9";
-              const isCmd = seq === "1;9";
-
-              if (final === "D") {
-                if (isWordMod) {
-                  // Option/Ctrl/Cmd+Left — word backward
-                  const target = wordLeft();
-                  if (target < cursor) { out.write(`\x1b[${cursor - target}D`); cursor = target; }
-                } else if (cursor > 0) {
-                  cursor--; out.write("\x1b[D");
-                }
-              } else if (final === "C") {
-                if (isWordMod) {
-                  // Option/Ctrl/Cmd+Right — word forward
-                  const target = wordRight();
-                  if (target > cursor) { out.write(`\x1b[${target - cursor}C`); cursor = target; }
-                } else if (cursor < buf.length) {
-                  cursor++; out.write("\x1b[C");
-                }
-              } else if (final === "H") {
-                // Home
-                if (cursor > 0) { out.write(`\x1b[${cursor}D`); cursor = 0; }
-              } else if (final === "F") {
-                // End
-                if (cursor < buf.length) { out.write(`\x1b[${buf.length - cursor}C`); cursor = buf.length; }
-              } else if (final === "u") {
-                // Kitty keyboard protocol: ESC [ codepoint ; modifier u
-                const parts = seq.split(";");
-                const codepoint = parseInt(parts[0], 10);
-                const mod = parts.length > 1 ? parseInt(parts[1], 10) : 1;
-                const hasCmd = (mod - 1) & 8;   // super/cmd bit
-                const hasCtrl = (mod - 1) & 4;  // ctrl bit
-
-                if (codepoint === 127 && (hasCmd || hasCtrl)) {
-                  // Cmd+Backspace / Ctrl+Backspace — delete to line start
-                  if (cursor > 0) {
-                    buf = buf.slice(cursor);
-                    cursor = 0;
-                    redraw();
-                  }
-                }
-              }
-              // Ignore other sequences (up/down, etc.)
-            }
-          }
-          continue;
-        }
-
-        // Printable characters
-        if (code >= 32) {
-          buf = buf.slice(0, cursor) + chunk[i] + buf.slice(cursor);
-          cursor++;
-          redraw();
-        }
-      }
-    };
-
-    process.stdin.on("data", onData);
+    rl.on("SIGINT", () => finish("\x03"));
+    rl.question(prompt, (answer) => finish(answer));
   });
-}
-
-/** Strip ANSI escape codes to get visible length */
-function stripAnsi(str: string): string {
-  return str.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
 const THINKING_PHRASES = [
@@ -262,12 +62,16 @@ export async function startChat(): Promise<void> {
   const briefing = cliBriefing(db);
   if (briefing) {
     const now = new Date();
-    const timeStr = now.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" }).toLowerCase();
+    const timeStr = now.toLocaleDateString(config.displayLocale, {
+      weekday: "long",
+      month: "short",
+      day: "numeric",
+    }).toLowerCase();
     console.log(chalk.dim(`  ${timeStr}`));
     console.log("");
     console.log(briefing);
   } else {
-    console.log(chalk.bold(`ray`) + chalk.dim(` — ${config.userName}`));
+    console.log(chalk.bold("ray") + chalk.dim(` — ${config.userName}`));
   }
   console.log("");
 
@@ -306,7 +110,7 @@ export async function startChat(): Promise<void> {
 
   // Background re-sync for recently linked accounts (Plaid backfill can take hours)
   let bgSyncTimer: ReturnType<typeof setInterval> | null = null;
-  const oldestAccount = db.prepare(`SELECT MIN(created_at) as ts FROM institutions`).get() as { ts: string | null };
+  const oldestAccount = db.prepare("SELECT MIN(created_at) as ts FROM institutions").get() as { ts: string | null };
   if (oldestAccount?.ts) {
     const ageMs = Date.now() - new Date(oldestAccount.ts + "Z").getTime();
     if (ageMs < 6 * 60 * 60 * 1000) { // linked within last 6 hours
@@ -346,7 +150,7 @@ export async function startChat(): Promise<void> {
   let hintIdx = Math.floor(Math.random() * hints.length);
 
   const getFooterText = () => {
-    const lastSync = db.prepare(`SELECT MAX(updated_at) as ts FROM accounts`).get() as { ts: string | null };
+    const lastSync = db.prepare("SELECT MAX(updated_at) as ts FROM accounts").get() as { ts: string | null };
     let syncStr = "";
     if (lastSync.ts) {
       const diffMs = Date.now() - new Date(lastSync.ts + "Z").getTime();
@@ -368,34 +172,17 @@ export async function startChat(): Promise<void> {
     const cols = process.stdout.columns || 80;
     const rule = chalk.dim("─".repeat(cols));
     const footerText = chalk.dim(`  ${getFooterText()}`);
-
-    // Ensure room below for top rule + prompt + bottom rule + footer (3 lines below start)
-    process.stdout.write("\n\n\n");
-    process.stdout.write("\x1b[3A\r");
-
-    // Print top rule, then prompt with bottom rule + footer rendered below
-    console.log(rule);
-    const input = await rawReadLine(chalk.dim("❯ "), [rule, footerText]);
+    const promptLabel = chalk.bgCyan.black(" YOU ");
+    const promptArrow = chalk.dim(" ❯ ");
+    const input = await promptLine(`${promptLabel}${promptArrow}`, [rule, footerText]);
 
     const trimmed = input.trim();
 
     if (!trimmed) {
-      // Clear the prompt frame (top rule + prompt + bottom rule + footer)
-      process.stdout.write("\x1b[3A\r");
-      for (let i = 0; i < 4; i++) process.stdout.write("\x1b[2K\x1b[1B");
-      process.stdout.write("\x1b[4A\r");
+      console.log("");
       continue;
     }
 
-    // Replace prompt frame with gray-background user message
-    // Move up 4 lines (footer, bottom rule, prompt, top rule) and clear them
-    process.stdout.write("\x1b[4A\r");
-    for (let i = 0; i < 4; i++) process.stdout.write("\x1b[2K\x1b[1B");
-    process.stdout.write("\x1b[4A\r");
-    // Print user message with gray background, padded to full width
-    const msgText = `❯ ${trimmed}`;
-    const pad = Math.max(0, cols - msgText.length);
-    console.log(chalk.bgGray.white(msgText + " ".repeat(pad)));
     if (trimmed === "\x03" || trimmed === "/quit" || trimmed === "/exit" || trimmed === "/q") {
       shutdown();
       break;
@@ -415,7 +202,8 @@ export async function startChat(): Promise<void> {
     try {
       const response = await handleMessage(db, trimmed, onProgress);
       spinner.stop();
-      console.log(`\n${formatResponse(response)}\n`);
+      const rayHeader = chalk.bgBlueBright.white(" RAY ");
+      console.log(`\n${rayHeader}\n${formatResponse(response)}\n`);
     } catch (err: any) {
       spinner.stop();
       console.error(formatError(err));
