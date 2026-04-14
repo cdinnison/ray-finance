@@ -42,7 +42,7 @@ Tell Ray about your family, goals, and financial strategy once. From then on, ev
 
 ### Set it and forget it
 
-- **Bank sync via Plaid** — Connect checking, savings, credit cards, investments, and loans.
+- **Bank sync via Plaid** — Connect checking, savings, credit cards, investments, and loans. Supports 🇺🇸 United States, 🇬🇧 United Kingdom, and 🇨🇦 Canada.
 - **Scheduled daily sync** — Automatic bank sync via launchd (macOS) or cron (Linux).
 - **Auto-recategorization** — Define rules to automatically re-label transactions.
 - **Export/import** — Back up and restore your financial data.
