@@ -11,6 +11,7 @@ import {
   refreshProducts,
 } from "./plaid/sync.js";
 import { calculateDailyScore, checkAchievements } from "./scoring/index.js";
+import { applyRecategorizationRules } from "./recategorization.js";
 import { decryptPlaidToken } from "./db/encryption.js";
 import { config } from "./config.js";
 import { institutionName } from "./cli/format.js";
@@ -182,42 +183,7 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
     }
   }
 
-  // Auto-recategorize using rules from recategorization_rules table
-  const rules = db.prepare(
-    `SELECT match_field, match_pattern, target_category, target_subcategory, label FROM recategorization_rules`
-  ).all() as {
-    match_field: string;
-    match_pattern: string;
-    target_category: string;
-    target_subcategory: string | null;
-    label: string;
-  }[];
-
-  let totalRecat = 0;
-  for (const rule of rules) {
-    // Validate match_field to prevent SQL injection — only allow known column names
-    const allowedFields = ["name", "merchant_name", "category", "subcategory"];
-    if (!allowedFields.includes(rule.match_field)) {
-      console.error(`  Skipping recat rule with invalid match_field: ${rule.match_field}`);
-      continue;
-    }
-
-    const result = rule.target_subcategory
-      ? db.prepare(
-          `UPDATE transactions SET category = ?, subcategory = ? WHERE ${rule.match_field} LIKE ? AND category != ?`
-        ).run(rule.target_category, rule.target_subcategory, rule.match_pattern, rule.target_category)
-      : db.prepare(
-          `UPDATE transactions SET category = ? WHERE ${rule.match_field} LIKE ? AND category != ?`
-        ).run(rule.target_category, rule.match_pattern, rule.target_category);
-
-    if (result.changes > 0) {
-      console.log(`  Recategorized ${result.changes} txn(s): ${rule.label || rule.match_pattern}`);
-      totalRecat += result.changes;
-    }
-  }
-  if (totalRecat > 0) {
-    console.log(`Auto-recategorized ${totalRecat} transaction(s).`);
-  }
+  applyRecategorizationRules(db);
 
   console.log("Sync complete.");
   return { transactionsAdded: totalAdded, institutionsSynced: instSynced };

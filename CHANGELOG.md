@@ -7,6 +7,8 @@
 
 ### Changed
 - `ray remove` now labels institutions by source in its listing — `(1 account, manual)` vs `(2 accounts, linked)` — instead of tagging every non-`manual-assets` institution as "linked". Matters when a manual-imported account (e.g. Apple Card) and a Plaid-linked account share a name.
+- `ray import-apple` now applies your configured auto-recategorization rules immediately after a successful import, so Apple Card rows pick up the same categorization you'd get after the next `ray sync`. Dry-run (`--dry-run`) still previews only.
+- Internal: extracted the auto-recategorization pass from `runDailySync` into `applyRecategorizationRules(db)` (new module `src/recategorization.ts`); shared by daily sync and Apple Card import.
 
 ### Fixed
 - `categoryLabel()` no longer crashes on null/undefined categories — previously threw `Cannot read properties of null (reading 'split')` when the AI chat tool encountered a transaction with a null category.

@@ -10,6 +10,7 @@ import {
   runAppleImport,
   appleAccountExists,
 } from "./apple-import.js";
+import { applyRecategorizationRules } from "./recategorization.js";
 
 function freshDb() {
   const db = new Database(":memory:");
@@ -319,5 +320,47 @@ describe("runAppleImport", () => {
     expect(second.rowsSkipped).toBe(3);
 
     try { unlinkSync(dupPath); } catch {}
+  });
+
+  it("auto-recategorizes freshly imported rows when a matching rule exists", () => {
+    const db = freshDb();
+    // Apple maps Poke's "Restaurants" -> FOOD_AND_DRINK. Target a different
+    // top-level category so the recat WHERE clause (category != target) fires.
+    db.prepare(
+      `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run("merchant_name", "%Poke%", "GENERAL_MERCHANDISE", null, "Poke -> general");
+
+    runAppleImport(db, { csvPath: path, balance: 0 });
+    const recat = applyRecategorizationRules(db);
+
+    expect(recat).toEqual({ rulesEvaluated: 1, rulesSkipped: 0, transactionsUpdated: 1 });
+    const poke: any = db.prepare(
+      `SELECT category FROM transactions WHERE merchant_name = 'Poke Tiki Costa Mesa'`
+    ).get();
+    expect(poke.category).toBe("GENERAL_MERCHANDISE");
+  });
+
+  it("is a no-op when recategorization_rules is empty", () => {
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 0 });
+    const recat = applyRecategorizationRules(db);
+    expect(recat).toEqual({ rulesEvaluated: 0, rulesSkipped: 0, transactionsUpdated: 0 });
+  });
+
+  it("skips a rule with invalid match_field without throwing or touching data", () => {
+    const db = freshDb();
+    db.prepare(
+      `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run("transaction_id; DROP TABLE transactions --", "%anything%", "FOOD_AND_DRINK", null, "evil");
+
+    runAppleImport(db, { csvPath: path, balance: 0 });
+    const recat = applyRecategorizationRules(db);
+
+    expect(recat.rulesSkipped).toBe(1);
+    expect(recat.transactionsUpdated).toBe(0);
+    const count: any = db.prepare(`SELECT COUNT(*) as n FROM transactions`).get();
+    expect(count.n).toBeGreaterThan(0);
   });
 });

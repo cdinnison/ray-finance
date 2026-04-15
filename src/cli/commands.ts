@@ -11,6 +11,7 @@ import { generateAlerts } from "../alerts/index.js";
 import { runDailySync } from "../daily-sync.js";
 import { startLinkServer } from "../server.js";
 import { addManualAccount, getManualAccounts, removeManualAccount, scrapeRedfinEstimate } from "../property.js";
+import { applyRecategorizationRules } from "../recategorization.js";
 import {
   runAppleImport,
   appleAccountExists,
@@ -865,6 +866,16 @@ export async function runImportApple(
       console.log(`  ${skipLabel} ${chalk.yellow(String(result.rowsSkipped) + " (unexpected insert conflict)")}`);
     } else {
       console.log(`  ${skipLabel} ${dim(String(result.rowsSkipped) + " (already in DB)")}`);
+    }
+  }
+
+  // Apply recategorization rules so configured rules take effect on freshly
+  // imported rows without requiring a separate `ray sync`. Skipped on dry-run
+  // (preview only, no writes). Helper is silent when no rules fire.
+  if (!opts.dryRun) {
+    const recat = applyRecategorizationRules(db);
+    if (recat.transactionsUpdated > 0) {
+      console.log("");
     }
   }
 
