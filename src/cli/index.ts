@@ -205,6 +205,20 @@ program
   });
 
 program
+  .command("import-apple")
+  .description("Import Apple Card transactions from an Apple CSV export")
+  .argument("<path>", "Path to Apple Card CSV")
+  .option("-b, --balance <amount>", "Current balance on the card (what you owe)")
+  .option("-l, --limit <amount>", "Credit limit")
+  .option("--replace-range", "Delete existing Apple Card rows in the CSV's date range before inserting")
+  .option("--dry-run", "Parse and summarize without writing to the database")
+  .action(async (path, opts) => {
+    ensureConfigured();
+    const { runImportApple } = await import("./commands.js");
+    await runImportApple(path, opts);
+  });
+
+program
   .command("billing")
   .description("Manage your Ray subscription")
   .action(async () => {
@@ -296,6 +310,7 @@ program.configureHelp({
     { name: "recap", desc: "Monthly spending recap" },
     { name: "export", desc: "Export data to a backup file" },
     { name: "import", desc: "Restore data from a backup file" },
+    { name: "import-apple", desc: "Import Apple Card transactions from a CSV export" },
     { name: "billing", desc: "Manage your Ray subscription" },
     { name: "update", desc: "Update Ray to the latest version" },
     { name: "doctor", desc: "Check system health" },

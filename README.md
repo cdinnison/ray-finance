@@ -126,6 +126,7 @@ Run `ray --help` to see all available commands.
 | `ray alerts` | Active financial alerts |
 | `ray export [path]` | Export data to a backup file |
 | `ray import <path>` | Restore from a backup file |
+| `ray import-apple <path>` | Import Apple Card transactions from an Apple CSV export |
 | `ray billing` | Manage your Ray subscription (managed mode only) |
 | `ray update` | Update Ray to the latest version |
 | `ray doctor` | Check system health |
@@ -153,6 +154,16 @@ Run `ray --help` to see all available commands.
 ```
 
 Two outbound calls: Plaid (bank sync) and your AI provider (PII-masked). Supports Anthropic, OpenAI, Ollama, and any OpenAI-compatible endpoint. Your financial data is never stored off your machine. No telemetry. No analytics.
+
+## Apple Card
+
+Apple Card isn't supported by Plaid, so Ray provides a CSV importer. Export your transactions from the Wallet app (*Apple Card → ••• → Download Statements → Export Transactions*), then:
+
+```bash
+ray import-apple ~/Downloads/apple-card.csv --balance 1847.32
+```
+
+On first run Ray creates an "Apple Card" manual account. On subsequent monthly imports, rows are deduplicated by a stable hash of date, amount, and merchant, so re-running is safe. If Apple retroactively updates pending charges or merchant names, use `--replace-range` to overwrite the CSV's date range authoritatively. Apple's categories are mapped to Ray's category taxonomy so transactions participate in spending, scoring, and budgets like any other account.
 
 ## Security & Privacy
 

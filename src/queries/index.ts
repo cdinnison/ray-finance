@@ -568,7 +568,8 @@ export function formatMoney(n: number): string {
   return "$" + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-export function categoryLabel(cat: string): string {
+export function categoryLabel(cat: string | null | undefined): string {
+  if (!cat) return "Other";
   const labels: Record<string, string> = {
     FOOD_AND_DRINK: "Food & Drink",
     GENERAL_MERCHANDISE: "Shopping",

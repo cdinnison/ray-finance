@@ -11,6 +11,15 @@ import { generateAlerts } from "../alerts/index.js";
 import { runDailySync } from "../daily-sync.js";
 import { startLinkServer } from "../server.js";
 import { addManualAccount, getManualAccounts, removeManualAccount, scrapeRedfinEstimate } from "../property.js";
+import {
+  runAppleImport,
+  appleAccountExists,
+  getAppleAccountBalance,
+  getAppleAccountLimit,
+  countAppleRowsInRange,
+  parseAppleCsv,
+} from "../apple-import.js";
+import { existsSync, readFileSync } from "fs";
 import { heading, progressBar, formatMoney, formatMoneyColored, padColumns, dim, formatDuration, formatError, renderLogo, institutionName } from "./format.js";
 
 export async function runSync(): Promise<void> {
@@ -663,4 +672,166 @@ export function showRecap(period = "last_month"): void {
   }
 
   console.log();
+}
+
+export async function runImportApple(
+  csvPath: string,
+  opts: { balance?: string; limit?: string; replaceRange?: boolean; dryRun?: boolean } = {}
+): Promise<void> {
+  const inquirer = (await import("inquirer")).default;
+  const ora = (await import("ora")).default;
+  const db = getDb();
+
+  const theme = {
+    prefix: { idle: " ", done: chalk.green(" ✓") },
+    style: { highlight: (text: string) => chalk.yellowBright(text) },
+  };
+
+  console.log(`\n${heading("Import Apple Card")}\n`);
+
+  if (!existsSync(csvPath)) {
+    console.error(chalk.red(`  File not found: ${csvPath}`));
+    process.exit(1);
+  }
+
+  // Parse up-front so we can surface header/parse errors before any prompts
+  let parsePreview: { rowCount: number; first: string; last: string; warnings: string[] };
+  try {
+    const { rows, warnings } = parseAppleCsv(readFileSync(csvPath, "utf-8"));
+    if (rows.length === 0) {
+      console.error(chalk.red("  CSV contained no valid rows."));
+      if (warnings.length > 0) {
+        for (const w of warnings) console.error(dim("    " + w));
+      }
+      process.exit(1);
+    }
+    const dates = rows.map(r => r.transactionDate).sort();
+    parsePreview = {
+      rowCount: rows.length,
+      first: dates[0],
+      last: dates[dates.length - 1],
+      warnings,
+    };
+  } catch (err: any) {
+    console.error(chalk.red("  " + err.message));
+    process.exit(1);
+  }
+
+  const existed = appleAccountExists(db);
+  console.log(
+    `  ${existed ? dim("Updating existing account") : chalk.green("Creating new account")}: ${chalk.bold("Apple Card")}`
+  );
+  console.log(dim(`  ${parsePreview.rowCount} rows, ${parsePreview.first} → ${parsePreview.last}`));
+  if (parsePreview.warnings.length > 0) {
+    console.log(chalk.yellow(`  ${parsePreview.warnings.length} rows skipped (see warnings below)`));
+  }
+  console.log("");
+
+  // --- Balance ---
+  const parseMoney = (v: string | undefined): number | undefined => {
+    if (v === undefined || v === "") return undefined;
+    const n = parseFloat(String(v).replace(/[$,]/g, ""));
+    return isNaN(n) ? undefined : n;
+  };
+
+  let balance = parseMoney(opts.balance);
+  if (balance === undefined && !opts.dryRun) {
+    const existingBalance = getAppleAccountBalance(db);
+    const { answer } = await inquirer.prompt([{theme,
+      type: "input",
+      name: "answer",
+      message: `Current balance on Apple Card ${dim("(what you owe, blank to keep existing)")}`,
+      default: existingBalance != null ? String(existingBalance) : undefined,
+      validate: (v: string) => {
+        if (v.trim() === "") return true;
+        const n = parseFloat(v.replace(/[$,]/g, ""));
+        return isNaN(n) ? "Enter a number or leave blank" : true;
+      },
+    }]);
+    balance = parseMoney(answer);
+  }
+
+  // --- Credit limit (optional) ---
+  let limit = parseMoney(opts.limit);
+  if (limit === undefined && !opts.dryRun) {
+    const existingLimit = getAppleAccountLimit(db);
+    const { answer } = await inquirer.prompt([{theme,
+      type: "input",
+      name: "answer",
+      message: `Credit limit ${dim("(optional, blank to skip)")}`,
+      default: existingLimit != null ? String(existingLimit) : undefined,
+      validate: (v: string) => {
+        if (v.trim() === "") return true;
+        const n = parseFloat(v.replace(/[$,]/g, ""));
+        return isNaN(n) ? "Enter a number or leave blank" : true;
+      },
+    }]);
+    limit = parseMoney(answer);
+  }
+
+  // --- Confirm --replace-range ---
+  if (opts.replaceRange && !opts.dryRun) {
+    const existing = countAppleRowsInRange(db, parsePreview.first, parsePreview.last);
+    if (existing > 0) {
+      const { confirm } = await inquirer.prompt([{theme,
+        type: "confirm",
+        name: "confirm",
+        message: `Delete ${chalk.bold(String(existing))} existing Apple Card rows in range ${parsePreview.first} → ${parsePreview.last}?`,
+        default: false,
+      }]);
+      if (!confirm) {
+        console.log(dim("  Aborted."));
+        return;
+      }
+    }
+  }
+
+  // --- Run ---
+  const spinner = ora(opts.dryRun ? "Previewing import..." : "Importing...").start();
+  let result;
+  try {
+    result = runAppleImport(db, {
+      csvPath,
+      balance,
+      limit,
+      replaceRange: opts.replaceRange,
+      dryRun: opts.dryRun,
+    });
+    spinner.succeed(opts.dryRun ? "Preview complete." : "Import complete.");
+  } catch (err: any) {
+    spinner.fail(formatError(err, "Import failed"));
+    process.exit(1);
+  }
+
+  // --- Summary ---
+  console.log("");
+  if (opts.dryRun) {
+    console.log(dim("  (dry run — no changes written)"));
+  }
+  const verb = result.accountCreated ? chalk.green("created") : dim("updated");
+  console.log(`  Account:       Apple Card ${verb}`);
+  if (result.balance != null) {
+    console.log(`  Balance:       ${rawFormatMoney(result.balance)}`);
+  }
+  if (result.dateRange) {
+    console.log(`  Date range:    ${result.dateRange.first} → ${result.dateRange.last}`);
+  }
+  console.log(`  Rows parsed:   ${result.rowsParsed}`);
+  if (result.rowsDeleted > 0) console.log(`  Rows deleted:  ${chalk.yellow(String(result.rowsDeleted))}`);
+  if (!opts.dryRun) {
+    console.log(`  Rows inserted: ${chalk.green(String(result.rowsInserted))}`);
+    if (result.rowsSkipped > 0) {
+      console.log(`  Rows skipped:  ${dim(String(result.rowsSkipped) + " (already in DB)")}`);
+    }
+  }
+
+  if (result.warnings.length > 0) {
+    console.log(`\n  ${chalk.yellow("Warnings:")}`);
+    for (const w of result.warnings.slice(0, 10)) console.log(dim("    " + w));
+    if (result.warnings.length > 10) {
+      console.log(dim(`    ... and ${result.warnings.length - 10} more`));
+    }
+  }
+
+  console.log("");
 }

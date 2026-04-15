@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `ray import-apple <path>` — import Apple Card transactions from Apple's CSV export. Apple Card isn't supported by Plaid; this creates a manual account, maps Apple's categories to Ray's taxonomy so transactions participate in spending/scoring/budgets, and is safe to re-run monthly via hash-based deduplication (or `--replace-range` for authoritative overwrites of a date window).
+
+### Fixed
+- `categoryLabel()` no longer crashes on null/undefined categories — previously threw `Cannot read properties of null (reading 'split')` when the AI chat tool encountered a transaction with a null category.
+
 ## 0.4.0
 
 - **Bring your own model** — use any AI provider: Anthropic (Claude), OpenAI (GPT), Ollama (local), or any OpenAI-compatible endpoint (DeepSeek, Groq, vLLM, etc.). Model list fetched from models.dev during setup.
