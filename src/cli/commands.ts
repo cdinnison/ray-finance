@@ -313,7 +313,7 @@ export function showScore(): void {
   const achievements = getAchievements(db);
 
   if (!score) {
-    console.log("\nNo daily scores yet. Run 'ray sync' first.");
+    console.log("\nNo daily scores yet. Run 'ray sync' or 'ray import-apple' first.");
     return;
   }
 

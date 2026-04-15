@@ -434,7 +434,7 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
 
     case "get_score": {
       const score = getLatestScore(db);
-      if (!score) return "No daily scores calculated yet. Scores are calculated during the daily sync.";
+      if (!score) return "No daily scores calculated yet. Run 'ray sync' or import an Apple Card CSV with 'ray import-apple' to produce a score.";
       let result = `Daily score: ${score.score}/100 (${score.date})`;
       result += `\nStreaks: ${score.no_restaurant_streak}d no restaurants | ${score.no_shopping_streak}d no shopping | ${score.on_pace_streak}d on pace`;
       result += `\nYesterday: ${formatMoney(score.total_spend)} total spend, ${score.restaurant_count} restaurant visits, ${score.shopping_count} shopping purchases`;
