@@ -11,6 +11,7 @@ import {
   appleAccountExists,
 } from "./apple-import.js";
 import { applyRecategorizationRules } from "./recategorization.js";
+import { calculateDailyScore } from "./scoring/index.js";
 
 function freshDb() {
   const db = new Database(":memory:");
@@ -369,6 +370,23 @@ describe("runAppleImport", () => {
     runAppleImport(db, { csvPath: path, balance: 0 });
     const recat = applyRecategorizationRules(db);
     expect(recat).toEqual({ rulesEvaluated: 0, rulesSkipped: 0, transactionsUpdated: 0 });
+  });
+
+  it("daily score can be computed after a non-dry-run import (empty start)", () => {
+    // Regression test for a bug where Apple-only users (no Plaid institutions)
+    // ended up with an empty daily_scores table forever because scoring was
+    // only wired into runDailySync. runImportApple now mirrors the sync's
+    // scoring pass — this test asserts the post-import scoring path works.
+    const db = freshDb();
+    const before = db.prepare(`SELECT COUNT(*) as n FROM daily_scores`).get() as { n: number };
+    expect(before.n).toBe(0);
+
+    runAppleImport(db, { csvPath: path, balance: 0 });
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    calculateDailyScore(db, yesterday);
+
+    const after = db.prepare(`SELECT COUNT(*) as n FROM daily_scores`).get() as { n: number };
+    expect(after.n).toBe(1);
   });
 
   it("skips a rule with invalid match_field without throwing or touching data", () => {

@@ -6,7 +6,7 @@ import {
   compareSpending, getNetWorthTrend,
   formatMoney as rawFormatMoney, categoryLabel,
 } from "../queries/index.js";
-import { getLatestScore, getAchievements, getMonthlySavings } from "../scoring/index.js";
+import { getLatestScore, getAchievements, getMonthlySavings, calculateDailyScore, checkAchievements } from "../scoring/index.js";
 import { generateAlerts } from "../alerts/index.js";
 import { runDailySync } from "../daily-sync.js";
 import { startLinkServer } from "../server.js";
@@ -869,13 +869,23 @@ export async function runImportApple(
     }
   }
 
-  // Apply recategorization rules so configured rules take effect on freshly
-  // imported rows without requiring a separate `ray sync`. Skipped on dry-run
-  // (preview only, no writes). Helper is silent when no rules fire.
+  // Run the same post-ingest derivation ray sync runs — recategorization +
+  // daily score + achievement checks — so Apple-only users (no Plaid
+  // institutions) don't get an empty daily_scores table forever, and
+  // `ray status` / `ray score` have a fresh row to show. Skipped on dry-run.
   if (!opts.dryRun) {
     const recat = applyRecategorizationRules(db);
     if (recat.transactionsUpdated > 0) {
       console.log("");
+    }
+
+    // Score yesterday (matching runDailySync's convention at daily-sync.ts:175).
+    // checkAchievements reads the latest daily_scores row, so order matters.
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    calculateDailyScore(db, yesterday);
+    const newAchievements = checkAchievements(db);
+    for (const a of newAchievements) {
+      console.log(`  Achievement unlocked: ${a.name} — ${a.description}`);
     }
   }
 

@@ -12,6 +12,7 @@
 
 ### Fixed
 - `ray import-apple` no longer hides manually-added debts (`ray add … liability`) from `ray status`, debt views, and AI debt advice. `getDebts()` previously returned only `liabilities`-table rows when that table was non-empty; importing Apple Card populated `liabilities` and silently dropped manual car loans / mortgages that live only in `accounts`. Now unions both sources, keyed by `account_id`.
+- `ray import-apple` now computes a daily score and checks achievements after a successful import, matching what `ray sync` does. Previously `ray status` / `ray score` showed no score data for Apple-only users (no Plaid institutions), because scoring was only wired into `runDailySync` which short-circuits on zero institutions.
 - Auto-recategorization rules now fire for subcategory-only refinements. Previously, a rule like "Starbucks → `FOOD_AND_DRINK_COFFEE`" silently never ran if the transaction was already tagged `FOOD_AND_DRINK` at the top level — the `WHERE category != target_category` guard excluded it. Rules now fire whenever either `category` or `subcategory` differs from the target.
 - `categoryLabel()` no longer crashes on null/undefined categories — previously threw `Cannot read properties of null (reading 'split')` when the AI chat tool encountered a transaction with a null category.
 
