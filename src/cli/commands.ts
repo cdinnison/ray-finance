@@ -740,12 +740,14 @@ export async function runImportApple(
     const { answer } = await inquirer.prompt([{theme,
       type: "input",
       name: "answer",
-      message: `Current balance on Apple Card ${dim("(what you owe, blank to keep existing)")}`,
+      message: existed
+        ? `Current balance on Apple Card ${dim("(what you owe, blank to keep existing)")}`
+        : `Current balance on Apple Card ${dim("(what you owe)")}`,
       default: existingBalance != null ? String(existingBalance) : undefined,
       validate: (v: string) => {
-        if (v.trim() === "") return true;
+        if (v.trim() === "") return existed ? true : "Required — enter your current balance";
         const n = parseFloat(v.replace(/[$,]/g, ""));
-        return isNaN(n) ? "Enter a number or leave blank" : true;
+        return isNaN(n) ? (existed ? "Enter a number or leave blank" : "Enter a number") : true;
       },
     }]);
     balance = parseMoney(answer);
