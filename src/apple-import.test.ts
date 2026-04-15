@@ -397,6 +397,41 @@ describe("runAppleImport", () => {
     expect(after.n).toBe(1);
   });
 
+  it("applies a category-only rule to rows with NULL category (Apple 'Other')", () => {
+    // Apple maps 'Other' and any unmapped category to { category: null,
+    // subcategory: null }. A rule matching by merchant_name should still fire
+    // on those rows. Regression test for a SQL three-valued-logic trap in the
+    // recat WHERE clause: plain `category != 'target'` against NULL yields
+    // NULL (falsy) and silently excludes the row.
+    const db = freshDb();
+    db.prepare(
+      `INSERT INTO institutions (item_id, access_token, name, products)
+       VALUES ('manual-apple', 'manual', 'Apple', '[]')`
+    ).run();
+    db.prepare(
+      `INSERT INTO accounts (account_id, item_id, name, type, current_balance)
+       VALUES ('manual-apple-card', 'manual-apple', 'Apple Card', 'credit', 0)`
+    ).run();
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, merchant_name, category, subcategory)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`
+    ).run("apple-mystery-1", "manual-apple-card", 12.34, "2026-04-10", "MYSTERY MERCHANT", "MysteryMerchant");
+
+    db.prepare(
+      `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run("merchant_name", "%MysteryMerchant%", "GENERAL_MERCHANDISE", null, "Mystery -> general");
+
+    const recat = applyRecategorizationRules(db);
+    expect(recat).toEqual({ rulesEvaluated: 1, rulesSkipped: 0, transactionsUpdated: 1 });
+
+    const row: any = db.prepare(
+      `SELECT category, subcategory FROM transactions WHERE merchant_name = 'MysteryMerchant'`
+    ).get();
+    expect(row.category).toBe("GENERAL_MERCHANDISE");
+    expect(row.subcategory).toBeNull();
+  });
+
   it("skips a rule with invalid match_field without throwing or touching data", () => {
     const db = freshDb();
     db.prepare(

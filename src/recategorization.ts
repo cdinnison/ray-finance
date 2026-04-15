@@ -43,15 +43,17 @@ export function applyRecategorizationRules(db: Database): RecategorizationResult
     // write the full (category, subcategory) pair so a rule never leaves a
     // stale subcategory attached to a new category (e.g. an "Amazon ->
     // GENERAL_MERCHANDISE" rule applied to a row tagged
-    // FOOD_AND_DRINK / FOOD_AND_DRINK_GROCERIES). COALESCE in the subcategory
-    // branch handles NULL rows — plain `!=` against NULL yields NULL (falsy)
-    // and would silently exclude them.
+    // FOOD_AND_DRINK / FOOD_AND_DRINK_GROCERIES). COALESCE is load-bearing on
+    // any nullable field we compare with `!=`: plain `!=` against NULL yields
+    // NULL (falsy in SQLite three-valued logic) and would silently exclude
+    // rows whose category or subcategory is NULL. Apple imports produce such
+    // rows for "Other" and any unmapped Apple category.
     const result = rule.target_subcategory
       ? db.prepare(
           `UPDATE transactions SET category = ?, subcategory = ? WHERE ${rule.match_field} LIKE ? AND (category != ? OR COALESCE(subcategory, '') != ?)`
         ).run(rule.target_category, rule.target_subcategory, rule.match_pattern, rule.target_category, rule.target_subcategory)
       : db.prepare(
-          `UPDATE transactions SET category = ?, subcategory = NULL WHERE ${rule.match_field} LIKE ? AND (category != ? OR subcategory IS NOT NULL)`
+          `UPDATE transactions SET category = ?, subcategory = NULL WHERE ${rule.match_field} LIKE ? AND (COALESCE(category, '') != ? OR subcategory IS NOT NULL)`
         ).run(rule.target_category, rule.match_pattern, rule.target_category);
 
     if (result.changes > 0) {
