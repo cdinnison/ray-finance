@@ -207,7 +207,11 @@ function mapCategory(appleCat: string): CategoryMapping {
 }
 
 /** Parse CSV text. Returns parsed rows + warnings for malformed rows. Throws on bad header. */
-export function parseAppleCsv(text: string): { rows: ParsedRow[]; warnings: string[]; allParsedDates: string[] } {
+export function parseAppleCsv(text: string): {
+  rows: ParsedRow[];
+  warnings: string[];
+  replaceWindow: { first: string; last: string } | null;
+} {
   const raw = parseCsv(text);
   if (raw.length === 0) throw new Error("CSV file is empty.");
 
@@ -220,16 +224,16 @@ export function parseAppleCsv(text: string): { rows: ParsedRow[]; warnings: stri
       `This doesn't look like an Apple Card CSV export.\n` +
       `  Expected columns: ${EXPECTED_HEADER.join(", ")}\n` +
       `  Got:              ${header.join(", ")}\n` +
-      `  Export from card.apple.com → Card Balance → Statements → Export Transactions.`
+      `  Export from card.apple.com -> Card Balance -> Statements -> Export Transactions.`
     );
   }
 
   const rows: ParsedRow[] = [];
   const warnings: string[] = [];
-  // Dates of every row whose Transaction Date parsed, including rows later
-  // skipped due to amount/column issues. `--replace-range` uses this to
-  // compute an authoritative delete window — otherwise a boundary row with a
-  // bad amount would narrow the window and leave stale rows in the DB.
+  // Every row whose Transaction Date parsed, including rows later skipped for
+  // bad amount/columns. `--replace-range` must delete across the *full* CSV
+  // window — narrowing to surviving rows would leave stale rows at the edges
+  // when a boundary row has a bad amount.
   const allParsedDates: string[] = [];
   for (let i = 1; i < raw.length; i++) {
     const r = raw[i];
@@ -262,7 +266,13 @@ export function parseAppleCsv(text: string): { rows: ParsedRow[]; warnings: stri
     });
   }
 
-  return { rows, warnings, allParsedDates };
+  let replaceWindow: { first: string; last: string } | null = null;
+  if (allParsedDates.length > 0) {
+    const sorted = [...allParsedDates].sort();
+    replaceWindow = { first: sorted[0], last: sorted[sorted.length - 1] };
+  }
+
+  return { rows, warnings, replaceWindow };
 }
 
 /** True if the Apple Card account row already exists in the DB */
@@ -297,7 +307,7 @@ export function countAppleRowsInRange(db: Database, first: string, last: string)
 /** Run the import end-to-end. Returns a result struct for the CLI layer to format. */
 export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImportResult {
   const text = readFileSync(opts.csvPath, "utf-8");
-  const { rows, warnings, allParsedDates } = parseAppleCsv(text);
+  const { rows, warnings, replaceWindow } = parseAppleCsv(text);
 
   if (rows.length === 0) {
     return {
@@ -317,12 +327,8 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
   const first = dates[0];
   const last = dates[dates.length - 1];
 
-  // `--replace-range` must delete every Apple row inside the CSV's window —
-  // using only successfully-ingested rows would leave stale rows behind if a
-  // boundary row was skipped due to a bad amount or truncated column.
-  const rawDates = [...allParsedDates].sort();
-  const replaceFirst = rawDates.length > 0 ? rawDates[0] : first;
-  const replaceLast = rawDates.length > 0 ? rawDates[rawDates.length - 1] : last;
+  const replaceFirst = replaceWindow?.first ?? first;
+  const replaceLast = replaceWindow?.last ?? last;
 
   if (opts.dryRun) {
     const rowsDeletedPreview = opts.replaceRange ? countAppleRowsInRange(db, replaceFirst, replaceLast) : 0;

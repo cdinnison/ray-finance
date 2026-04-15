@@ -697,9 +697,18 @@ export async function runImportApple(
   }
 
   // Parse up-front so we can surface header/parse errors before any prompts
-  let parsePreview: { rowCount: number; first: string; last: string; warnings: string[] };
+  let parsePreview: {
+    rowCount: number;
+    first: string;
+    last: string;
+    // Authoritative window `--replace-range` will delete across — wider than
+    // `first`/`last` when rows at the edges were skipped for bad amount/columns.
+    replaceFirst: string;
+    replaceLast: string;
+    warnings: string[];
+  };
   try {
-    const { rows, warnings } = parseAppleCsv(readFileSync(csvPath, "utf-8"));
+    const { rows, warnings, replaceWindow } = parseAppleCsv(readFileSync(csvPath, "utf-8"));
     if (rows.length === 0) {
       console.error(chalk.red("  CSV contained no valid rows."));
       if (warnings.length > 0) {
@@ -708,10 +717,14 @@ export async function runImportApple(
       process.exit(1);
     }
     const dates = rows.map(r => r.transactionDate).sort();
+    const first = dates[0];
+    const last = dates[dates.length - 1];
     parsePreview = {
       rowCount: rows.length,
-      first: dates[0],
-      last: dates[dates.length - 1],
+      first,
+      last,
+      replaceFirst: replaceWindow?.first ?? first,
+      replaceLast: replaceWindow?.last ?? last,
       warnings,
     };
   } catch (err: any) {
@@ -781,12 +794,12 @@ export async function runImportApple(
 
   // --- Confirm --replace-range ---
   if (opts.replaceRange && !opts.dryRun) {
-    const existing = countAppleRowsInRange(db, parsePreview.first, parsePreview.last);
+    const existing = countAppleRowsInRange(db, parsePreview.replaceFirst, parsePreview.replaceLast);
     if (existing > 0) {
       const { confirm } = await inquirer.prompt([{theme,
         type: "confirm",
         name: "confirm",
-        message: `Delete ${chalk.bold(String(existing))} existing Apple Card rows in range ${parsePreview.first} → ${parsePreview.last}?`,
+        message: `Delete ${chalk.bold(String(existing))} existing Apple Card rows in range ${parsePreview.replaceFirst} → ${parsePreview.replaceLast}?`,
         default: false,
       }]);
       if (!confirm) {
@@ -843,10 +856,16 @@ export async function runImportApple(
   const skipLabel = opts.dryRun ? "Would skip:   " : "Rows skipped: ";
   console.log(`  ${insertLabel} ${chalk.green(String(result.rowsInserted))}`);
   if (result.rowsSkipped > 0) {
-    // Under --replace-range the prior rows were deleted first, so any skip
-    // here is a duplicate within the CSV itself, not a pre-existing row.
-    const skipReason = opts.replaceRange ? "duplicate within CSV" : "already in DB";
-    console.log(`  ${skipLabel} ${dim(String(result.rowsSkipped) + ` (${skipReason})`)}`);
+    // Without --replace-range, skips are expected on re-runs (transaction_id
+    // already in DB). Under --replace-range the prior range was deleted first
+    // AND occurrence indexing disambiguates same-day/same-merchant/same-amount
+    // rows, so a skip here signals an unexpected insert conflict worth
+    // surfacing rather than normal duplication.
+    if (opts.replaceRange) {
+      console.log(`  ${skipLabel} ${chalk.yellow(String(result.rowsSkipped) + " (unexpected insert conflict)")}`);
+    } else {
+      console.log(`  ${skipLabel} ${dim(String(result.rowsSkipped) + " (already in DB)")}`);
+    }
   }
 
   console.log("");
