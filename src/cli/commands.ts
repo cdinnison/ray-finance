@@ -423,16 +423,16 @@ export async function runRemove(): Promise<void> {
   const readline = await import("readline");
   const db = getDb();
 
-  type Entry = { kind: "institution"; item_id: string; name: string } | { kind: "manual"; account_id: string; name: string; balance: number; type: string; listing_url: string | null };
+  type Entry = { kind: "institution"; item_id: string; name: string; manual: boolean } | { kind: "manual"; account_id: string; name: string; balance: number; type: string; listing_url: string | null };
 
   const entries: Entry[] = [];
 
-  // Linked institutions (exclude manual-assets)
+  // Linked institutions (exclude manual-assets, which is surfaced per-account below)
   const institutions = db.prepare(
-    `SELECT item_id, name FROM institutions WHERE item_id != 'manual-assets' ORDER BY created_at`
-  ).all() as { item_id: string; name: string }[];
+    `SELECT item_id, name, access_token FROM institutions WHERE item_id != 'manual-assets' ORDER BY created_at`
+  ).all() as { item_id: string; name: string; access_token: string }[];
   for (const inst of institutions) {
-    entries.push({ kind: "institution", item_id: inst.item_id, name: inst.name });
+    entries.push({ kind: "institution", item_id: inst.item_id, name: inst.name, manual: inst.access_token === "manual" });
   }
 
   // Manual accounts
@@ -451,7 +451,8 @@ export async function runRemove(): Promise<void> {
     const e = entries[i];
     if (e.kind === "institution") {
       const acctCount = (db.prepare(`SELECT COUNT(*) as c FROM accounts WHERE item_id = ?`).get(e.item_id) as { c: number }).c;
-      console.log(`  ${dim(`${i + 1}.`)} ${e.name}  ${dim(`(${acctCount} account${acctCount !== 1 ? "s" : ""}, linked)`)}`);
+      const sourceLabel = e.manual ? "manual" : "linked";
+      console.log(`  ${dim(`${i + 1}.`)} ${e.name}  ${dim(`(${acctCount} account${acctCount !== 1 ? "s" : ""}, ${sourceLabel})`)}`);
     } else {
       const typeLabel = e.type === "loan" || e.type === "credit" ? "liability" : "asset";
       const url = e.listing_url ? dim(` — ${e.listing_url}`) : "";
