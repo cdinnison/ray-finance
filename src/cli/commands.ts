@@ -803,6 +803,15 @@ export async function runImportApple(
     process.exit(1);
   }
 
+  // --- Warnings (printed first so they can't be missed below the summary) ---
+  if (result.warnings.length > 0) {
+    console.log(`\n  ${chalk.yellow("Warnings:")}`);
+    for (const w of result.warnings.slice(0, 10)) console.log(dim("    " + w));
+    if (result.warnings.length > 10) {
+      console.log(dim(`    ... and ${result.warnings.length - 10} more`));
+    }
+  }
+
   // --- Summary ---
   console.log("");
   if (opts.dryRun) {
@@ -818,19 +827,11 @@ export async function runImportApple(
   }
   console.log(`  Rows parsed:   ${result.rowsParsed}`);
   if (result.rowsDeleted > 0) console.log(`  Rows deleted:  ${chalk.yellow(String(result.rowsDeleted))}`);
-  if (!opts.dryRun) {
-    console.log(`  Rows inserted: ${chalk.green(String(result.rowsInserted))}`);
-    if (result.rowsSkipped > 0) {
-      console.log(`  Rows skipped:  ${dim(String(result.rowsSkipped) + " (already in DB)")}`);
-    }
-  }
-
-  if (result.warnings.length > 0) {
-    console.log(`\n  ${chalk.yellow("Warnings:")}`);
-    for (const w of result.warnings.slice(0, 10)) console.log(dim("    " + w));
-    if (result.warnings.length > 10) {
-      console.log(dim(`    ... and ${result.warnings.length - 10} more`));
-    }
+  const insertLabel = opts.dryRun ? "Would insert: " : "Rows inserted:";
+  const skipLabel = opts.dryRun ? "Would skip:   " : "Rows skipped: ";
+  console.log(`  ${insertLabel} ${chalk.green(String(result.rowsInserted))}`);
+  if (result.rowsSkipped > 0) {
+    console.log(`  ${skipLabel} ${dim(String(result.rowsSkipped) + " (already in DB)")}`);
   }
 
   console.log("");

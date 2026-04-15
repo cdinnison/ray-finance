@@ -141,6 +141,48 @@ describe("runAppleImport", () => {
     expect(acc.balance_limit).toBe(5000);
   });
 
+  it("derives available_balance from balance + limit so utilization queries see the card", () => {
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 1500, limit: 5000 });
+    const acc: any = db.prepare(
+      `SELECT current_balance, balance_limit, available_balance FROM accounts WHERE account_id = 'manual-apple-card'`
+    ).get();
+    expect(acc.available_balance).toBe(3500);
+  });
+
+  it("recomputes available_balance on re-run with new balance, prior limit preserved", () => {
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 1500, limit: 5000 });
+    runAppleImport(db, { csvPath: path, balance: 2000 });  // limit omitted
+    const acc: any = db.prepare(
+      `SELECT current_balance, balance_limit, available_balance FROM accounts WHERE account_id = 'manual-apple-card'`
+    ).get();
+    expect(acc.balance_limit).toBe(5000);
+    expect(acc.current_balance).toBe(2000);
+    expect(acc.available_balance).toBe(3000);
+  });
+
+  it("mirrors balance into liabilities so getDebts() reports Apple Card debt even when other liabilities exist", () => {
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 1500 });
+    const liab: any = db.prepare(
+      `SELECT type, current_balance FROM liabilities WHERE account_id = 'manual-apple-card'`
+    ).get();
+    expect(liab).toBeDefined();
+    expect(liab.type).toBe("credit card");
+    expect(liab.current_balance).toBe(1500);
+  });
+
+  it("updates the liabilities row on re-import with a new balance", () => {
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 1500 });
+    runAppleImport(db, { csvPath: path, balance: 2200 });
+    const liab: any = db.prepare(
+      `SELECT current_balance FROM liabilities WHERE account_id = 'manual-apple-card'`
+    ).get();
+    expect(liab.current_balance).toBe(2200);
+  });
+
   it("updates existing balance on re-run without replacing it with null", () => {
     const db = freshDb();
     runAppleImport(db, { csvPath: path, balance: 1000 });
@@ -157,8 +199,11 @@ describe("runAppleImport", () => {
     expect(poke.category).toBe("FOOD_AND_DRINK");
     expect(poke.subcategory).toBe("FOOD_AND_DRINK_RESTAURANT");
 
+    // Card payments map to TRANSFER_IN (not LOAN_PAYMENTS) so they don't pass
+    // through Ray's `amount < 0 AND category NOT IN ('TRANSFER_IN')` income
+    // filters and inflate cash-flow numbers.
     const payment: any = db.prepare(`SELECT category FROM transactions WHERE merchant_name = 'Ach Deposit'`).get();
-    expect(payment.category).toBe("LOAN_PAYMENTS");
+    expect(payment.category).toBe("TRANSFER_IN");
 
     const refund: any = db.prepare(`SELECT category FROM transactions WHERE merchant_name = 'Sq Vacancy Coffee (return)'`).get();
     expect(refund.category).toBe("TRANSFER_IN");
@@ -221,15 +266,25 @@ describe("runAppleImport", () => {
     expect(csvRows.n).toBe(5);
   });
 
-  it("--dry-run writes nothing to the database", () => {
+  it("--dry-run writes nothing to the database but previews would-insert/would-skip", () => {
     const db = freshDb();
     const result = runAppleImport(db, { csvPath: path, balance: 500, dryRun: true });
 
     expect(result.rowsParsed).toBe(5);
-    expect(result.rowsInserted).toBe(0);
+    // All 5 are new on a fresh DB → would-insert previews 5
+    expect(result.rowsInserted).toBe(5);
+    expect(result.rowsSkipped).toBe(0);
     expect(appleAccountExists(db)).toBe(false);
     const count: any = db.prepare(`SELECT COUNT(*) as n FROM transactions`).get();
     expect(count.n).toBe(0);
+  });
+
+  it("--dry-run after a real import previews 0 inserts, 5 skips", () => {
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 500 });
+    const result = runAppleImport(db, { csvPath: path, balance: 500, dryRun: true });
+    expect(result.rowsInserted).toBe(0);
+    expect(result.rowsSkipped).toBe(5);
   });
 
   it("reports the date range from the CSV", () => {

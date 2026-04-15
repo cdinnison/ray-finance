@@ -70,10 +70,12 @@ const CATEGORY_MAP: Record<string, CategoryMapping> = {
   Medical: { category: "MEDICAL", subcategory: null },
   Utilities: { category: "RENT_AND_UTILITIES", subcategory: null },
   "Govt-services-parking": { category: "GOVERNMENT_AND_NON_PROFIT", subcategory: null },
-  // Payment (negative): card payment from your bank. LOAN_PAYMENTS excludes it
-  // from scoring's total-spend bucket; negative amount already excludes it from
-  // spending queries (amount > 0).
-  Payment: { category: "LOAN_PAYMENTS", subcategory: null },
+  // Payment (negative): card payment from your bank. Mapped to TRANSFER_IN
+  // because Ray's income queries (getIncome, getCashFlow*, compareSpending)
+  // exclude only TRANSFER_IN from `amount < 0`-as-income — LOAN_PAYMENTS would
+  // be counted as income and inflate cash-flow numbers. The corresponding
+  // outflow on the bank account will appear as TRANSFER_OUT via Plaid.
+  Payment: { category: "TRANSFER_IN", subcategory: null },
   // Installment (positive): Apple Card monthly financing charge (e.g., iPhone).
   // Amortization of a prior purchase, not new spending — LOAN_PAYMENTS keeps it
   // out of total-spend aggregation.
@@ -310,12 +312,28 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
 
   if (opts.dryRun) {
     const rowsDeletedPreview = opts.replaceRange ? countAppleRowsInRange(db, first, last) : 0;
+    // With --replace-range, every CSV row is a fresh insert (the prior rows are
+    // deleted first). Without it, count which transaction_ids already exist so
+    // the user sees a real would-insert vs would-skip breakdown — the whole
+    // point of --dry-run.
+    let wouldInsert = rows.length;
+    let wouldSkip = 0;
+    if (!opts.replaceRange) {
+      const exists = db.prepare(`SELECT 1 FROM transactions WHERE transaction_id = ?`);
+      const indexed = assignOccurrenceIndices(rows);
+      wouldInsert = 0;
+      for (const row of indexed) {
+        const id = transactionId(row.transactionDate, row.amount, row.merchant, row.occurrence);
+        if (exists.get(id)) wouldSkip++;
+        else wouldInsert++;
+      }
+    }
     return {
       accountId: ACCOUNT_ID,
       accountCreated: !appleAccountExists(db),
       rowsParsed: rows.length,
-      rowsInserted: 0,
-      rowsSkipped: 0,
+      rowsInserted: wouldInsert,
+      rowsSkipped: wouldSkip,
       rowsDeleted: rowsDeletedPreview,
       warnings,
       dateRange: { first, last },
@@ -344,6 +362,31 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
        updated_at      = datetime('now')`
   );
 
+  // Derive available_balance = limit - current_balance after the upsert resolves
+  // both fields (so re-runs that omit one of --balance/--limit still produce a
+  // correct value using the prior stored side). Without this, ai/insights.ts
+  // skips the card from utilization (it requires available_balance IS NOT NULL).
+  const updateAvailable = db.prepare(
+    `UPDATE accounts
+     SET available_balance = balance_limit - current_balance
+     WHERE account_id = ?
+       AND balance_limit IS NOT NULL
+       AND current_balance IS NOT NULL`
+  );
+
+  // Mirror the resolved balance into the liabilities table. getDebts() reads
+  // from liabilities first and only falls back to accounts when liabilities is
+  // empty — so without this, an Apple Card user who also has any synced loan or
+  // credit card silently drops the Apple debt from debt views and payoff plans.
+  const upsertLiability = db.prepare(
+    `INSERT INTO liabilities (account_id, type, current_balance, updated_at)
+     SELECT ?, 'credit card', current_balance, datetime('now')
+     FROM accounts WHERE account_id = ? AND current_balance IS NOT NULL
+     ON CONFLICT(account_id, type) DO UPDATE SET
+       current_balance = excluded.current_balance,
+       updated_at      = datetime('now')`
+  );
+
   const deleteRange = db.prepare(
     `DELETE FROM transactions WHERE account_id = ? AND date BETWEEN ? AND ?`
   );
@@ -364,6 +407,8 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
       opts.balance ?? null,
       opts.limit ?? null
     );
+    updateAvailable.run(ACCOUNT_ID);
+    upsertLiability.run(ACCOUNT_ID, ACCOUNT_ID);
 
     if (opts.replaceRange) {
       const info = deleteRange.run(ACCOUNT_ID, first, last);
