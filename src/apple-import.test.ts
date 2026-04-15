@@ -323,8 +323,11 @@ describe("runAppleImport", () => {
     try { unlinkSync(dupPath); } catch {}
   });
 
-  it("auto-recategorizes freshly imported rows when a matching rule exists", () => {
+  it("auto-recategorizes freshly imported rows, clearing the stale subcategory", () => {
     const db = freshDb();
+    // Apple maps Poke's "Restaurants" -> FOOD_AND_DRINK / FOOD_AND_DRINK_RESTAURANT.
+    // A category-only rule (null target_subcategory) must change the top-level
+    // category AND clear the stale subcategory, not leave an inconsistent pair.
     db.prepare(
       `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
        VALUES (?, ?, ?, ?, ?)`
@@ -335,9 +338,14 @@ describe("runAppleImport", () => {
 
     expect(recat).toEqual({ rulesEvaluated: 1, rulesSkipped: 0, transactionsUpdated: 1 });
     const poke: any = db.prepare(
-      `SELECT category FROM transactions WHERE merchant_name = 'Poke Tiki Costa Mesa'`
+      `SELECT category, subcategory FROM transactions WHERE merchant_name = 'Poke Tiki Costa Mesa'`
     ).get();
     expect(poke.category).toBe("GENERAL_MERCHANDISE");
+    expect(poke.subcategory).toBeNull();
+
+    // Idempotent: second run fires nothing (row already at target with cleared subcategory).
+    const recat2 = applyRecategorizationRules(db);
+    expect(recat2.transactionsUpdated).toBe(0);
   });
 
   it("applies a subcategory-only refinement rule (same top-level category)", () => {
