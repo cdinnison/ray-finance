@@ -11,6 +11,7 @@
 - Internal: extracted the auto-recategorization pass from `runDailySync` into `applyRecategorizationRules(db)` (new module `src/recategorization.ts`); shared by daily sync and Apple Card import.
 
 ### Fixed
+- `ray import-apple` no longer hides manually-added debts (`ray add … liability`) from `ray status`, debt views, and AI debt advice. `getDebts()` previously returned only `liabilities`-table rows when that table was non-empty; importing Apple Card populated `liabilities` and silently dropped manual car loans / mortgages that live only in `accounts`. Now unions both sources, keyed by `account_id`.
 - Auto-recategorization rules now fire for subcategory-only refinements. Previously, a rule like "Starbucks → `FOOD_AND_DRINK_COFFEE`" silently never ran if the transaction was already tagged `FOOD_AND_DRINK` at the top level — the `WHERE category != target_category` guard excluded it. Rules now fire whenever either `category` or `subcategory` differs from the target.
 - `categoryLabel()` no longer crashes on null/undefined categories — previously threw `Cannot read properties of null (reading 'split')` when the AI chat tool encountered a transaction with a null category.
 

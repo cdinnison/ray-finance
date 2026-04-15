@@ -467,9 +467,13 @@ export function getDebts(db: Database): {
   totalDebt: number;
   debts: { name: string; balance: number; rate: number; minPayment: number; type: string; nextDue: string | null }[];
 } {
-  // Try liabilities table first
+  // Liabilities table carries rate / min payment / due date (Plaid + Apple
+  // import populate it). Manual debts added via `ray add … liability` live
+  // only in `accounts`, so union both sources keyed by account_id —
+  // liabilities is authoritative for any account_id it covers, `accounts`
+  // fills in the rest.
   const liabilities = db.prepare(
-    `SELECT a.name, l.current_balance as balance, l.interest_rate as rate,
+    `SELECT a.account_id, a.name, l.current_balance as balance, l.interest_rate as rate,
        l.minimum_payment as min_payment, l.type, l.next_payment_due as next_due
      FROM liabilities l
      JOIN accounts a ON l.account_id = a.account_id
@@ -477,32 +481,28 @@ export function getDebts(db: Database): {
      ORDER BY l.interest_rate DESC`
   ).all() as any[];
 
-  if (liabilities.length > 0) {
-    const totalDebt = liabilities.reduce((s: number, r: any) => s + (r.balance || 0), 0);
-    return {
-      totalDebt,
-      debts: liabilities.map((r: any) => ({
-        name: r.name,
-        balance: r.balance || 0,
-        rate: r.rate || 0,
-        minPayment: r.min_payment || 0,
-        type: r.type || "unknown",
-        nextDue: r.next_due || null,
-      })),
-    };
-  }
+  const liabilityCoveredIds = new Set(
+    (db.prepare(`SELECT account_id FROM liabilities`).all() as { account_id: string }[])
+      .map((r) => r.account_id)
+  );
 
-  // Fallback: credit accounts
-  const credits = db.prepare(
-    `SELECT name, current_balance as balance, type FROM accounts
+  const fallbackCredits = db.prepare(
+    `SELECT account_id, name, current_balance as balance, type FROM accounts
      WHERE type IN ('credit', 'loan') AND current_balance > 0
      ORDER BY current_balance DESC`
   ).all() as any[];
+  const orphanCredits = fallbackCredits.filter((r: any) => !liabilityCoveredIds.has(r.account_id));
 
-  const totalDebt = credits.reduce((s: number, r: any) => s + (r.balance || 0), 0);
-  return {
-    totalDebt,
-    debts: credits.map((r: any) => ({
+  const debts = [
+    ...liabilities.map((r: any) => ({
+      name: r.name,
+      balance: r.balance || 0,
+      rate: r.rate || 0,
+      minPayment: r.min_payment || 0,
+      type: r.type || "unknown",
+      nextDue: r.next_due || null,
+    })),
+    ...orphanCredits.map((r: any) => ({
       name: r.name,
       balance: r.balance || 0,
       rate: 0,
@@ -510,7 +510,10 @@ export function getDebts(db: Database): {
       type: r.type,
       nextDue: null,
     })),
-  };
+  ];
+
+  const totalDebt = debts.reduce((s: number, d) => s + d.balance, 0);
+  return { totalDebt, debts };
 }
 
 // --- Spending comparison ---

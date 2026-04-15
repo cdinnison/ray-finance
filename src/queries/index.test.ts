@@ -364,6 +364,31 @@ describe("getDebts", () => {
     const result = getDebts(db);
     expect(result.totalDebt).toBe(500);
   });
+
+  it("unions manual liabilities with liabilities-table debts", () => {
+    // Manual liability (accounts only, no liabilities row) — ray add pattern.
+    seedAccount(db, { id: "manual-car-loan", type: "loan", balance: 25000, name: "Car Loan" });
+    // Liabilities-table entry (Apple import / Plaid pattern).
+    seedAccount(db, { id: "manual-apple-card", type: "credit", balance: 1000, name: "Apple Card" });
+    db.prepare(`INSERT INTO liabilities (account_id, type, current_balance) VALUES (?, ?, ?)`)
+      .run("manual-apple-card", "credit", 1000);
+
+    const result = getDebts(db);
+    expect(result.totalDebt).toBe(26000);
+    expect(result.debts.map((d) => d.name).sort()).toEqual(["Apple Card", "Car Loan"]);
+  });
+
+  it("does not duplicate when an account is in both liabilities and accounts", () => {
+    // Plaid-synced credit card: lives in both tables.
+    seedAccount(db, { id: "chase-cc", type: "credit", balance: 3000, name: "Chase" });
+    db.prepare(`INSERT INTO liabilities (account_id, type, interest_rate, current_balance) VALUES (?, ?, ?, ?)`)
+      .run("chase-cc", "credit", 19.99, 3000);
+
+    const result = getDebts(db);
+    expect(result.debts).toHaveLength(1);
+    expect(result.totalDebt).toBe(3000);
+    expect(result.debts[0].rate).toBe(19.99);
+  });
 });
 
 describe("getCashFlow", () => {
