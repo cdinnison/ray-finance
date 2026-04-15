@@ -157,7 +157,7 @@ Two outbound calls: Plaid (bank sync) and your AI provider (PII-masked). Support
 
 ## Apple Card
 
-Apple Card isn't supported by Plaid, so Ray provides a CSV importer. Export your transactions from the Wallet app (*Apple Card → ••• → Download Statements → Export Transactions*), then:
+Apple Card isn't supported by Plaid, so Ray provides a CSV importer. Export your transactions from [card.apple.com](https://card.apple.com) (sign in → *Account Details → Transaction History → Export Transactions*) — the web portal lets you pick any date range, unlike the Wallet app which is limited to single statements. Then:
 
 ```bash
 ray import-apple ~/Downloads/apple-card.csv --balance 1847.32
