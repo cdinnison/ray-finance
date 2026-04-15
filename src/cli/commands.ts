@@ -427,7 +427,8 @@ export async function runRemove(): Promise<void> {
 
   const entries: Entry[] = [];
 
-  // Linked institutions (exclude manual-assets, which is surfaced per-account below)
+  // Institutions (Plaid-linked and non-property manual, e.g. Apple Card).
+  // Excludes manual-assets, whose accounts are surfaced per-account below.
   const institutions = db.prepare(
     `SELECT item_id, name, access_token FROM institutions WHERE item_id != 'manual-assets' ORDER BY created_at`
   ).all() as { item_id: string; name: string; access_token: string }[];
@@ -736,6 +737,12 @@ export async function runImportApple(
   };
 
   let balance = parseMoney(opts.balance);
+  // Dry-run skips prompts but the real import will require a balance on first
+  // run — surface that now so the preview isn't misleading.
+  if (opts.dryRun && !existed && balance === undefined) {
+    console.log(chalk.yellow(`  Note: real import will prompt for current balance (first-run requirement).`));
+    console.log("");
+  }
   if (balance === undefined && !opts.dryRun) {
     const existingBalance = getAppleAccountBalance(db);
     const { answer } = await inquirer.prompt([{theme,
@@ -820,7 +827,9 @@ export async function runImportApple(
   if (opts.dryRun) {
     console.log(dim("  (dry run — no changes written)"));
   }
-  const verb = result.accountCreated ? chalk.green("created") : dim("updated");
+  const verb = opts.dryRun
+    ? dim(result.accountCreated ? "would create" : "would update")
+    : (result.accountCreated ? chalk.green("created") : dim("updated"));
   console.log(`  Account:       Apple Card ${verb}`);
   if (result.balance != null) {
     console.log(`  Balance:       ${rawFormatMoney(result.balance)}`);
@@ -834,7 +843,10 @@ export async function runImportApple(
   const skipLabel = opts.dryRun ? "Would skip:   " : "Rows skipped: ";
   console.log(`  ${insertLabel} ${chalk.green(String(result.rowsInserted))}`);
   if (result.rowsSkipped > 0) {
-    console.log(`  ${skipLabel} ${dim(String(result.rowsSkipped) + " (already in DB)")}`);
+    // Under --replace-range the prior rows were deleted first, so any skip
+    // here is a duplicate within the CSV itself, not a pre-existing row.
+    const skipReason = opts.replaceRange ? "duplicate within CSV" : "already in DB";
+    console.log(`  ${skipLabel} ${dim(String(result.rowsSkipped) + ` (${skipReason})`)}`);
   }
 
   console.log("");

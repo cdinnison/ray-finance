@@ -52,6 +52,9 @@ export function runImport(inputPath: string): void {
     backup = JSON.parse(readFileSync(inputPath, "utf-8"));
   } catch {
     console.error(chalk.red("Invalid backup file."));
+    if (inputPath.toLowerCase().endsWith(".csv")) {
+      console.error(chalk.dim("Did you mean 'ray import-apple'? That command imports Apple Card CSV exports."));
+    }
     process.exit(1);
   }
 
