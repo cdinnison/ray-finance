@@ -171,6 +171,12 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
     `Net worth snapshot: $${netWorth.toLocaleString()} (assets: $${assets.total.toLocaleString()}, liabilities: $${liabs.total.toLocaleString()})`
   );
 
+  // Apply user-configured recat rules BEFORE computing today's score — the
+  // score reads category/subcategory directly from transactions, so rules
+  // that the user cares about (e.g. Amazon -> ONLINE_SHOPPING) should shape
+  // the score they see on the same day the sync ran, not tomorrow's.
+  applyRecategorizationRules(db);
+
   // Calculate daily score for yesterday
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const dailyScore = calculateDailyScore(db, yesterday);
@@ -182,8 +188,6 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
       console.log(`  Achievement unlocked: ${a.name} — ${a.description}`);
     }
   }
-
-  applyRecategorizationRules(db);
 
   console.log("Sync complete.");
   return { transactionsAdded: totalAdded, institutionsSynced: instSynced };
