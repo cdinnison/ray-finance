@@ -378,9 +378,11 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
   // from liabilities first and only falls back to accounts when liabilities is
   // empty — so without this, an Apple Card user who also has any synced loan or
   // credit card silently drops the Apple debt from debt views and payoff plans.
+  // type='credit' matches Plaid's syncLiabilities convention (src/plaid/sync.ts)
+  // — keeps debt-view labels consistent across import sources.
   const upsertLiability = db.prepare(
     `INSERT INTO liabilities (account_id, type, current_balance, updated_at)
-     SELECT ?, 'credit card', current_balance, datetime('now')
+     SELECT ?, 'credit', current_balance, datetime('now')
      FROM accounts WHERE account_id = ? AND current_balance IS NOT NULL
      ON CONFLICT(account_id, type) DO UPDATE SET
        current_balance = excluded.current_balance,

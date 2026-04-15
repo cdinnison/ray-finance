@@ -169,7 +169,7 @@ describe("runAppleImport", () => {
       `SELECT type, current_balance FROM liabilities WHERE account_id = 'manual-apple-card'`
     ).get();
     expect(liab).toBeDefined();
-    expect(liab.type).toBe("credit card");
+    expect(liab.type).toBe("credit");
     expect(liab.current_balance).toBe(1500);
   });
 
