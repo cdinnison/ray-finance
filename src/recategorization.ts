@@ -39,10 +39,15 @@ export function applyRecategorizationRules(db: Database): RecategorizationResult
       continue;
     }
 
+    // Guard is "already at target" — covers both fields when the rule sets a
+    // subcategory so subcategory-only refinements (same top-level category,
+    // different subcategory) still fire. COALESCE handles rows with NULL
+    // subcategory; plain `!=` against NULL yields NULL (falsy) and the row
+    // would be silently excluded.
     const result = rule.target_subcategory
       ? db.prepare(
-          `UPDATE transactions SET category = ?, subcategory = ? WHERE ${rule.match_field} LIKE ? AND category != ?`
-        ).run(rule.target_category, rule.target_subcategory, rule.match_pattern, rule.target_category)
+          `UPDATE transactions SET category = ?, subcategory = ? WHERE ${rule.match_field} LIKE ? AND (category != ? OR COALESCE(subcategory, '') != ?)`
+        ).run(rule.target_category, rule.target_subcategory, rule.match_pattern, rule.target_category, rule.target_subcategory)
       : db.prepare(
           `UPDATE transactions SET category = ? WHERE ${rule.match_field} LIKE ? AND category != ?`
         ).run(rule.target_category, rule.match_pattern, rule.target_category);

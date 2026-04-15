@@ -324,8 +324,6 @@ describe("runAppleImport", () => {
 
   it("auto-recategorizes freshly imported rows when a matching rule exists", () => {
     const db = freshDb();
-    // Apple maps Poke's "Restaurants" -> FOOD_AND_DRINK. Target a different
-    // top-level category so the recat WHERE clause (category != target) fires.
     db.prepare(
       `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
        VALUES (?, ?, ?, ?, ?)`
@@ -339,6 +337,31 @@ describe("runAppleImport", () => {
       `SELECT category FROM transactions WHERE merchant_name = 'Poke Tiki Costa Mesa'`
     ).get();
     expect(poke.category).toBe("GENERAL_MERCHANDISE");
+  });
+
+  it("applies a subcategory-only refinement rule (same top-level category)", () => {
+    const db = freshDb();
+    // Apple maps Poke's "Restaurants" -> FOOD_AND_DRINK / FOOD_AND_DRINK_RESTAURANT.
+    // This rule refines only the subcategory — same top-level category — which
+    // an earlier version of the helper silently excluded via its WHERE clause.
+    db.prepare(
+      `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run("merchant_name", "%Poke%", "FOOD_AND_DRINK", "FOOD_AND_DRINK_FAST_FOOD", "Poke -> fast food");
+
+    runAppleImport(db, { csvPath: path, balance: 0 });
+    const recat = applyRecategorizationRules(db);
+
+    expect(recat).toEqual({ rulesEvaluated: 1, rulesSkipped: 0, transactionsUpdated: 1 });
+    const poke: any = db.prepare(
+      `SELECT category, subcategory FROM transactions WHERE merchant_name = 'Poke Tiki Costa Mesa'`
+    ).get();
+    expect(poke.category).toBe("FOOD_AND_DRINK");
+    expect(poke.subcategory).toBe("FOOD_AND_DRINK_FAST_FOOD");
+
+    // Idempotent — second run fires nothing (row already at target).
+    const recat2 = applyRecategorizationRules(db);
+    expect(recat2.transactionsUpdated).toBe(0);
   });
 
   it("is a no-op when recategorization_rules is empty", () => {
