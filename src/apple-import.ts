@@ -224,7 +224,7 @@ export function parseAppleCsv(text: string): {
       `This doesn't look like an Apple Card CSV export.\n` +
       `  Expected columns: ${EXPECTED_HEADER.join(", ")}\n` +
       `  Got:              ${header.join(", ")}\n` +
-      `  Export from card.apple.com -> Card Balance -> Statements -> Export Transactions.`
+      `  Export from https://card.apple.com/ (the web portal, not the Wallet app).`
     );
   }
 
