@@ -103,11 +103,11 @@ export async function showAccounts(): Promise<void> {
   ).all() as { institution: string; item_id: string; created_at: string; logo: string | null; primary_color: string | null; name: string | null; type: string | null; subtype: string | null; mask: string | null; current_balance: number | null; currency: string | null }[];
 
   if (institutions.length === 0) {
-    console.log("\nNo accounts linked. Run 'ray link' to connect one.\n");
+    console.log("\nNo accounts yet. Run 'ray link', 'ray add', or 'ray import-apple' to get started.\n");
     return;
   }
 
-  console.log(`\n${heading("Linked Accounts")}\n`);
+  console.log(`\n${heading("Accounts")}\n`);
 
   // Group rows by institution
   const groups = new Map<string, typeof institutions>();
