@@ -50,7 +50,7 @@ const COMMANDS = [
   { name: "setup", desc: "Configure Ray (API keys, preferences)" },
   { name: "sync", desc: "Sync transactions from linked banks" },
   { name: "link", desc: "Link a new financial account via Plaid" },
-  { name: "accounts", desc: "Show linked accounts and balances" },
+  { name: "accounts", desc: "Show accounts and balances" },
   { name: "status", desc: "Show financial overview" },
   { name: "transactions", desc: "Show recent transactions" },
   { name: "spending", desc: "Show spending breakdown" },
