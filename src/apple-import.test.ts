@@ -307,6 +307,23 @@ describe("runAppleImport", () => {
     const db = freshDb();
     const result = runAppleImport(db, { csvPath: path, balance: 0 });
     expect(result.dateRange).toEqual({ first: "2026-03-31", last: "2026-04-13" });
+    expect(result.replaceWindow).toEqual({ first: "2026-03-31", last: "2026-04-13" });
+  });
+
+  it("preserves a wider replaceWindow than dateRange when malformed boundary rows are skipped", () => {
+    const widePath = writeCsv([
+      VALID_HEADER,
+      `04/08/2026,04/09/2026,"Boundary bad amount","Boundary","Other","Purchase","not-a-number","Adam"`,
+      `04/10/2026,04/11/2026,"STARBUCKS","Starbucks","Restaurants","Purchase","6.45","Adam"`,
+    ]);
+
+    const db = freshDb();
+    const result = runAppleImport(db, { csvPath: widePath, balance: 0, dryRun: true, replaceRange: true });
+
+    expect(result.dateRange).toEqual({ first: "2026-04-10", last: "2026-04-10" });
+    expect(result.replaceWindow).toEqual({ first: "2026-04-08", last: "2026-04-10" });
+
+    try { unlinkSync(widePath); } catch {}
   });
 
   it("preserves same-day same-merchant same-amount duplicates via occurrence index", () => {

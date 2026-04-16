@@ -23,6 +23,24 @@ import {
 import { existsSync, readFileSync } from "fs";
 import { heading, progressBar, formatMoney, formatMoneyColored, padColumns, dim, formatDuration, formatError, renderLogo, institutionName } from "./format.js";
 
+export function getImportAppleBackfillWindow(
+  result: { dateRange: { first: string; last: string } | null; replaceWindow: { first: string; last: string } | null },
+  opts: { replaceRange?: boolean },
+  now = new Date()
+): { start: string; end: string } | null {
+  if (!result.dateRange) return null;
+
+  const yesterday = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
+  const earliestAffectedDate = opts.replaceRange
+    ? (result.replaceWindow?.first ?? result.dateRange.first)
+    : result.dateRange.first;
+
+  return {
+    start: earliestAffectedDate <= yesterday ? earliestAffectedDate : yesterday,
+    end: yesterday,
+  };
+}
+
 export async function runSync(): Promise<void> {
   const ora = (await import("ora")).default;
   const spinner = ora("Syncing transactions...").start();
@@ -95,12 +113,12 @@ export async function runLink(): Promise<void> {
 export async function showAccounts(): Promise<void> {
   const db = getDb();
   const institutions = db.prepare(
-    `SELECT i.name as institution, i.item_id, i.created_at, i.logo, i.primary_color,
+    `SELECT i.name as institution, i.item_id, i.created_at, i.logo, i.primary_color, i.access_token,
             a.name, a.type, a.subtype, a.mask, a.current_balance, a.currency
      FROM institutions i
      LEFT JOIN accounts a ON a.item_id = i.item_id AND a.hidden = 0
      ORDER BY i.created_at, a.type, a.current_balance DESC`
-  ).all() as { institution: string; item_id: string; created_at: string; logo: string | null; primary_color: string | null; name: string | null; type: string | null; subtype: string | null; mask: string | null; current_balance: number | null; currency: string | null }[];
+  ).all() as { institution: string; item_id: string; created_at: string; logo: string | null; primary_color: string | null; access_token: string; name: string | null; type: string | null; subtype: string | null; mask: string | null; current_balance: number | null; currency: string | null }[];
 
   if (institutions.length === 0) {
     console.log("\nNo accounts yet. Run 'ray link', 'ray add', or 'ray import-apple' to get started.\n");
@@ -130,7 +148,8 @@ export async function showAccounts(): Promise<void> {
       const logo = await renderLogo(first.logo);
       if (logo) logoStr = logo.replace(/\n/g, "") + " ";
     }
-    console.log(`${logoStr}${institutionName(first.institution, first.primary_color)}`);
+    const manualLabel = first.access_token === "manual" ? dim(" (manual)") : "";
+    console.log(`${logoStr}${institutionName(first.institution, first.primary_color)}${manualLabel}`);
 
     for (const row of rows) {
       if (!row.name) {
@@ -738,6 +757,9 @@ export async function runImportApple(
     `  ${existed ? dim("Updating existing account") : chalk.green("Creating new account")}: ${chalk.bold("Apple Card")}`
   );
   console.log(dim(`  ${parsePreview.rowCount} rows, ${parsePreview.first} → ${parsePreview.last}`));
+  if (opts.replaceRange) {
+    console.log(dim(`  Replace window: ${parsePreview.replaceFirst} → ${parsePreview.replaceLast}`));
+  }
   if (parsePreview.warnings.length > 0) {
     console.log(chalk.yellow(`  ${parsePreview.warnings.length} rows skipped (see warnings below)`));
   }
@@ -851,6 +873,9 @@ export async function runImportApple(
   if (result.dateRange) {
     console.log(`  Date range:    ${result.dateRange.first} → ${result.dateRange.last}`);
   }
+  if (opts.replaceRange && result.replaceWindow) {
+    console.log(`  Replace window:${result.replaceWindow.first === result.replaceWindow.last ? " " : ""} ${result.replaceWindow.first} → ${result.replaceWindow.last}`);
+  }
   console.log(`  Rows parsed:   ${result.rowsParsed}`);
   const deleteLabel = opts.dryRun ? "Would delete: " : "Rows deleted: ";
   if (result.rowsDeleted > 0) console.log(`  ${deleteLabel} ${chalk.yellow(String(result.rowsDeleted))}`);
@@ -887,21 +912,24 @@ export async function runImportApple(
       const { netWorth: nw } = snapshotNetWorth(db);
       console.log(dim(`  Net worth snapshot: $${nw.toLocaleString()}`));
 
+      const backfillWindow = getImportAppleBackfillWindow(result, opts);
+
       // Backfill daily scores across the imported date range so streaks
       // accumulate properly (each day reads the prior day's daily_scores row)
       // and streak-based achievements (Kitchen Hero, Detoxed, etc.) can unlock.
       // daily_scores has date-PK UPSERT, so re-scoring dates that already have
       // rows is idempotent. Performance: ~5 queries per day, acceptable for
       // typical CSV ranges (a 6-month backfill is ~900 queries, ~2s).
-      const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-      const start = result.dateRange.first;
       // Always score through yesterday — not just through dateRange.last —
       // because (a) the "fresh score row" users see must reflect today's
       // knowledge, and (b) calculateDailyScore chains streaks off the prior
       // day's daily_scores row, so any retroactive import requires re-scoring
-      // every subsequent day to rebuild the streak chain.
-      const end = yesterday;
-      if (start <= end) {
+      // every subsequent day to rebuild the streak chain. Under
+      // `--replace-range`, rescore from the full deleted window rather than
+      // only from the first successfully imported row, or stale daily_scores
+      // can survive for boundary dates that were deleted due to malformed rows.
+      if (backfillWindow) {
+        const { start, end } = backfillWindow;
         let d = start;
         let daysScored = 0;
         while (d <= end) {

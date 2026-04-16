@@ -36,6 +36,7 @@ export interface AppleImportResult {
   rowsDeleted: number;
   warnings: string[];
   dateRange: { first: string; last: string } | null;
+  replaceWindow: { first: string; last: string } | null;
   balance: number | null;
 }
 
@@ -323,6 +324,7 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
       rowsDeleted: 0,
       warnings,
       dateRange: null,
+      replaceWindow: null,
       balance: null,
     };
   }
@@ -361,6 +363,7 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
       rowsDeleted: rowsDeletedPreview,
       warnings,
       dateRange: { first, last },
+      replaceWindow: { first: replaceFirst, last: replaceLast },
       balance: opts.balance ?? getAppleAccountBalance(db),
     };
   }
@@ -473,6 +476,7 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
     rowsDeleted,
     warnings,
     dateRange: { first, last },
+    replaceWindow: { first: replaceFirst, last: replaceLast },
     balance: opts.balance ?? getAppleAccountBalance(db),
   };
 }

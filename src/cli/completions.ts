@@ -62,6 +62,7 @@ const COMMANDS = [
   { name: "recap", desc: "Monthly spending recap" },
   { name: "export", desc: "Export data to a backup file" },
   { name: "import", desc: "Restore data from a backup file" },
+  { name: "import-apple", desc: "Import Apple Card transactions from a CSV export" },
   { name: "billing", desc: "Manage your Ray subscription" },
   { name: "update", desc: "Update Ray to the latest version" },
   { name: "doctor", desc: "Check system health" },
@@ -100,10 +101,7 @@ function generateZsh(): string {
             '-m[Filter by merchant]:merchant:' \\
             '--merchant[Filter by merchant]:merchant:'
           ;;
-        export)
-          _files
-          ;;
-        import)
+        export|import|import-apple)
           _files
           ;;
       esac
@@ -138,7 +136,7 @@ _ray_completions() {
     transactions)
       COMPREPLY=( $(compgen -W "-n --limit -c --category -m --merchant" -- "$cur") )
       ;;
-    export|import)
+    export|import|import-apple)
       COMPREPLY=( $(compgen -f -- "$cur") )
       ;;
   esac
@@ -162,8 +160,20 @@ function generateFish(): string {
     `complete -c ray -n '__fish_seen_subcommand_from transactions' -s m -l merchant -d 'Filter by merchant'`,
     `complete -c ray -n '__fish_seen_subcommand_from export' -F`,
     `complete -c ray -n '__fish_seen_subcommand_from import' -F`,
+    `complete -c ray -n '__fish_seen_subcommand_from import-apple' -F`,
   );
   return lines.join("\n") + "\n";
+}
+
+export function generateCompletionScript(shellName: "bash" | "fish" | "zsh"): string {
+  switch (shellName) {
+    case "bash":
+      return generateBash();
+    case "fish":
+      return generateFish();
+    default:
+      return generateZsh();
+  }
 }
 
 export function installCompletions(): void {
@@ -172,17 +182,7 @@ export function installCompletions(): void {
   if (!existsSync(RAY_DIR)) mkdirSync(RAY_DIR, { recursive: true });
 
   // Generate completion script
-  let script: string;
-  switch (shell.name) {
-    case "bash":
-      script = generateBash();
-      break;
-    case "fish":
-      script = generateFish();
-      break;
-    default:
-      script = generateZsh();
-  }
+  const script = generateCompletionScript(shell.name as "bash" | "fish" | "zsh");
 
   writeFileSync(shell.cacheFile, script);
   console.log(`Wrote ${shell.name} completions to ${chalk.dim(shell.cacheFile)}`);
