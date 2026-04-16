@@ -18,6 +18,7 @@ import {
   getAppleAccountBalance,
   getAppleAccountLimit,
   countAppleRowsInRange,
+  sumAppleRowsInRange,
   parseAppleCsv,
 } from "../apple-import.js";
 import { existsSync, readFileSync } from "fs";
@@ -819,10 +820,11 @@ export async function runImportApple(
   if (opts.replaceRange && !opts.dryRun) {
     const existing = countAppleRowsInRange(db, parsePreview.replaceFirst, parsePreview.replaceLast);
     if (existing > 0) {
+      const total = sumAppleRowsInRange(db, parsePreview.replaceFirst, parsePreview.replaceLast);
       const { confirm } = await inquirer.prompt([{theme,
         type: "confirm",
         name: "confirm",
-        message: `Delete ${chalk.bold(String(existing))} existing Apple Card rows in range ${parsePreview.replaceFirst} → ${parsePreview.replaceLast}?`,
+        message: `Delete ${chalk.bold(String(existing))} existing Apple Card rows (${rawFormatMoney(total)}) in range ${parsePreview.replaceFirst} → ${parsePreview.replaceLast}?`,
         default: false,
       }]);
       if (!confirm) {
@@ -843,7 +845,7 @@ export async function runImportApple(
       replaceRange: opts.replaceRange,
       dryRun: opts.dryRun,
     });
-    spinner.succeed(opts.dryRun ? "Preview complete." : "Import complete.");
+    spinner.stop();
   } catch (err: any) {
     spinner.fail(formatError(err, "Import failed"));
     process.exit(1);
@@ -951,5 +953,6 @@ export async function runImportApple(
     }
   }
 
+  spinner.succeed(opts.dryRun ? "Preview complete." : "Import complete.");
   console.log("");
 }

@@ -309,6 +309,13 @@ export function countAppleRowsInRange(db: Database, first: string, last: string)
   return r.n;
 }
 
+export function sumAppleRowsInRange(db: Database, first: string, last: string): number {
+  const r = db
+    .prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE account_id = ? AND date BETWEEN ? AND ?`)
+    .get(ACCOUNT_ID, first, last) as { total: number };
+  return r.total;
+}
+
 /** Run the import end-to-end. Returns a result struct for the CLI layer to format. */
 export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImportResult {
   const text = readFileSync(opts.csvPath, "utf-8");
