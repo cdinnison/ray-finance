@@ -879,10 +879,29 @@ export async function runImportApple(
       console.log("");
     }
 
-    // Score yesterday (matching runDailySync's convention at daily-sync.ts:175).
-    // checkAchievements reads the latest daily_scores row, so order matters.
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    calculateDailyScore(db, yesterday);
+    // Backfill daily scores across the imported date range so streaks
+    // accumulate properly (each day reads the prior day's daily_scores row)
+    // and streak-based achievements (Kitchen Hero, Detoxed, etc.) can unlock.
+    // daily_scores has date-PK UPSERT, so re-scoring dates that already have
+    // rows is idempotent. Performance: ~5 queries per day, acceptable for
+    // typical CSV ranges (a 6-month backfill is ~900 queries, ~2s).
+    if (result.dateRange) {
+      const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+      const start = result.dateRange.first;
+      const end = yesterday < result.dateRange.last ? yesterday : result.dateRange.last;
+      let d = start;
+      let daysScored = 0;
+      while (d <= end) {
+        calculateDailyScore(db, d);
+        daysScored++;
+        const next = new Date(new Date(d + "T00:00:00").getTime() + 86400000);
+        d = next.toISOString().slice(0, 10);
+      }
+      if (daysScored > 0) {
+        console.log(dim(`  Scored ${daysScored} day(s), ${start} \u2192 ${end}`));
+      }
+    }
+
     const newAchievements = checkAchievements(db);
     for (const a of newAchievements) {
       console.log(`  Achievement unlocked: ${a.name} — ${a.description}`);

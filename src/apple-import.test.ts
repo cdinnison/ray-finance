@@ -394,21 +394,25 @@ describe("runAppleImport", () => {
     expect(recat).toEqual({ rulesEvaluated: 0, rulesSkipped: 0, transactionsUpdated: 0 });
   });
 
-  it("daily score can be computed after a non-dry-run import (empty start)", () => {
-    // Regression test for a bug where Apple-only users (no Plaid institutions)
-    // ended up with an empty daily_scores table forever because scoring was
-    // only wired into runDailySync. runImportApple now mirrors the sync's
-    // scoring pass — this test asserts the post-import scoring path works.
+  it("backfilling scores across the import range accumulates streaks", () => {
+    // Regression test: scoring only yesterday produces streak=1 even when the
+    // CSV has multiple consecutive days. Backfilling day-by-day allows streaks
+    // to accumulate via calculateDailyScore's "read prior row" logic.
     const db = freshDb();
-    const before = db.prepare(`SELECT COUNT(*) as n FROM daily_scores`).get() as { n: number };
-    expect(before.n).toBe(0);
+    const result = runAppleImport(db, { csvPath: path, balance: 0 });
 
-    runAppleImport(db, { csvPath: path, balance: 0 });
-    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-    calculateDailyScore(db, yesterday);
+    // The sample CSV spans 2026-04-10 → 2026-04-13 (3 unique dates).
+    // None of the rows are restaurants/shopping, so streaks should grow.
+    const dates = ["2026-04-10", "2026-04-11", "2026-04-12", "2026-04-13"];
+    for (const d of dates) calculateDailyScore(db, d);
 
-    const after = db.prepare(`SELECT COUNT(*) as n FROM daily_scores`).get() as { n: number };
-    expect(after.n).toBe(1);
+    const rows = db.prepare(`SELECT date, no_restaurant_streak FROM daily_scores ORDER BY date`).all() as { date: string; no_restaurant_streak: number }[];
+    expect(rows).toHaveLength(4);
+    // 04-10 through 04-12 have no restaurant transactions → streak builds 1, 2, 3.
+    // 04-13 has Poke Tiki (FOOD_AND_DRINK_RESTAURANT) → streak resets to 0.
+    // The 1→2→3 progression proves the backfill loop works (each day reads the
+    // prior day's row). Without backfill, every day would start at 1.
+    expect(rows.map((r) => r.no_restaurant_streak)).toEqual([1, 2, 3, 0]);
   });
 
   it("applies a category-only rule to rows with NULL category (Apple 'Other')", () => {
