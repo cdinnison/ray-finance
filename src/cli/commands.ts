@@ -824,7 +824,7 @@ export async function runImportApple(
       const { confirm } = await inquirer.prompt([{theme,
         type: "confirm",
         name: "confirm",
-        message: `Delete ${chalk.bold(String(existing))} existing Apple Card rows (${rawFormatMoney(total)}) in range ${parsePreview.replaceFirst} → ${parsePreview.replaceLast}?`,
+        message: `Delete ${chalk.bold(String(existing))} existing Apple Card rows (${total < 0 ? "-" : ""}${rawFormatMoney(total)}) in range ${parsePreview.replaceFirst} → ${parsePreview.replaceLast}?`,
         default: false,
       }]);
       if (!confirm) {
