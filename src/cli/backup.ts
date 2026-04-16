@@ -97,11 +97,13 @@ export function runImport(inputPath: string): void {
     insertBudget.run(b.category, b.monthly_limit, b.period);
   }
 
-  // Restore recat rules (skip exact duplicates)
-  const existingRule = db.prepare("SELECT 1 FROM recategorization_rules WHERE match_field = ? AND match_pattern = ? AND target_category = ?");
+  // Restore recat rules (skip exact duplicates, including target_subcategory)
+  const existingRule = db.prepare(
+    "SELECT 1 FROM recategorization_rules WHERE match_field = ? AND match_pattern = ? AND target_category = ? AND COALESCE(target_subcategory, '') = COALESCE(?, '')"
+  );
   const insertRule = db.prepare("INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label) VALUES (?, ?, ?, ?, ?)");
   for (const r of backup.recat_rules) {
-    if (!existingRule.get(r.match_field, r.match_pattern, r.target_category)) {
+    if (!existingRule.get(r.match_field, r.match_pattern, r.target_category, r.target_subcategory)) {
       insertRule.run(r.match_field, r.match_pattern, r.target_category, r.target_subcategory, r.label);
     }
   }
