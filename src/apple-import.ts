@@ -309,6 +309,7 @@ export function countAppleRowsInRange(db: Database, first: string, last: string)
   return r.n;
 }
 
+/** Net amount of existing Apple Card rows within a date range (for --replace-range confirmation) */
 export function sumAppleRowsInRange(db: Database, first: string, last: string): number {
   const r = db
     .prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE account_id = ? AND date BETWEEN ? AND ?`)

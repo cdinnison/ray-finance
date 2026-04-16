@@ -845,6 +845,9 @@ export async function runImportApple(
       replaceRange: opts.replaceRange,
       dryRun: opts.dryRun,
     });
+    // stop() here rather than succeed() — post-import output (warnings,
+    // summary, recat, scoring, achievements) prints below; succeed() fires
+    // after all of it so the tick doesn't precede the output it summarises.
     spinner.stop();
   } catch (err: any) {
     spinner.fail(formatError(err, "Import failed"));
