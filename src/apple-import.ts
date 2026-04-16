@@ -237,19 +237,23 @@ export function parseAppleCsv(text: string): {
   const allParsedDates: string[] = [];
   for (let i = 1; i < raw.length; i++) {
     const r = raw[i];
-    // Skip fully empty lines
     if (r.length === 1 && r[0] === "") continue;
+
+    // Parse date first — recorded in allParsedDates regardless of later
+    // column/amount failures, so --replace-range covers the full CSV window
+    // even when a boundary row has too few columns.
+    const date = r.length >= 1 ? parseDate(r[0]) : null;
+    if (date) allParsedDates.push(date);
+
     if (r.length < EXPECTED_HEADER.length) {
       warnings.push(`Row ${i + 1}: expected ${EXPECTED_HEADER.length} columns, got ${r.length} — skipped`);
       continue;
     }
-
-    const date = parseDate(r[0]);
     if (!date) {
       warnings.push(`Row ${i + 1}: unparseable Transaction Date "${r[0]}" — skipped`);
       continue;
     }
-    allParsedDates.push(date);
+
     const amount = parseAmount(r[6]);
     if (amount === null) {
       warnings.push(`Row ${i + 1}: unparseable Amount "${r[6]}" — skipped`);

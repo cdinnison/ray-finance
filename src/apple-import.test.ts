@@ -102,6 +102,20 @@ describe("parseAppleCsv", () => {
     const { rows } = parseAppleCsv(sampleCsv().join("\n"));
     expect(rows[0].transactionDate).toBe("2026-04-13");
   });
+
+  it("replaceWindow includes dates from short rows at boundaries", () => {
+    // A boundary row with too few columns but a valid date should still
+    // widen the --replace-range delete window.
+    const csv = [
+      "Transaction Date,Clearing Date,Description,Merchant,Category,Type,Amount (USD),Purchased By",
+      '04/08/2026,04/09/2026,"SHORT ROW"',  // only 3 columns — skipped, but date is valid
+      '04/10/2026,04/11/2026,"STARBUCKS","Starbucks","Restaurants","Purchase","6.45","Adam"',
+    ].join("\n");
+    const { rows, warnings, replaceWindow } = parseAppleCsv(csv);
+    expect(rows).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(replaceWindow).toEqual({ first: "2026-04-08", last: "2026-04-10" });
+  });
 });
 
 describe("runAppleImport", () => {
