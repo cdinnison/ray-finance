@@ -50,7 +50,7 @@ export function applyRecategorizationRules(db: Database): RecategorizationResult
     // rows for "Other" and any unmapped Apple category.
     const result = rule.target_subcategory
       ? db.prepare(
-          `UPDATE transactions SET category = ?, subcategory = ? WHERE ${rule.match_field} LIKE ? AND (category != ? OR COALESCE(subcategory, '') != ?)`
+          `UPDATE transactions SET category = ?, subcategory = ? WHERE ${rule.match_field} LIKE ? AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)`
         ).run(rule.target_category, rule.target_subcategory, rule.match_pattern, rule.target_category, rule.target_subcategory)
       : db.prepare(
           `UPDATE transactions SET category = ?, subcategory = NULL WHERE ${rule.match_field} LIKE ? AND (COALESCE(category, '') != ? OR subcategory IS NOT NULL)`
@@ -63,7 +63,7 @@ export function applyRecategorizationRules(db: Database): RecategorizationResult
   }
 
   if (transactionsUpdated > 0) {
-    console.log(`Auto-recategorized ${transactionsUpdated} transaction(s).`);
+    console.log(`  Auto-recategorized ${transactionsUpdated} transaction(s).`);
   }
 
   return {

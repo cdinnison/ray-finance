@@ -444,7 +444,7 @@ export async function runRemove(): Promise<void> {
   }
 
   if (entries.length === 0) {
-    console.log("\nNo accounts to remove. Use 'ray link' or 'ray add' to add one.");
+    console.log("\nNo accounts to remove. Use 'ray link', 'ray add', or 'ray import-apple' to add one.");
     return;
   }
 
@@ -894,7 +894,8 @@ export async function runImportApple(
       while (d <= end) {
         calculateDailyScore(db, d);
         daysScored++;
-        const next = new Date(new Date(d + "T00:00:00").getTime() + 86400000);
+        const [y, mo, dy] = d.split("-").map(Number);
+        const next = new Date(Date.UTC(y, mo - 1, dy + 1));
         d = next.toISOString().slice(0, 10);
       }
       if (daysScored > 0) {
