@@ -401,8 +401,9 @@ describe("runAppleImport", () => {
     const db = freshDb();
     const result = runAppleImport(db, { csvPath: path, balance: 0 });
 
-    // The sample CSV spans 2026-04-10 → 2026-04-13 (3 unique dates).
-    // None of the rows are restaurants/shopping, so streaks should grow.
+    // Score a consecutive 4-day window to verify streaks accumulate.
+    // 04-10 through 04-12 have no restaurant transactions → streak builds.
+    // 04-13 has Poke Tiki (FOOD_AND_DRINK_RESTAURANT) → streak resets.
     const dates = ["2026-04-10", "2026-04-11", "2026-04-12", "2026-04-13"];
     for (const d of dates) calculateDailyScore(db, d);
 

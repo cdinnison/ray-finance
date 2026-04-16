@@ -398,10 +398,11 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
        AND current_balance IS NOT NULL`
   );
 
-  // Mirror the resolved balance into the liabilities table. getDebts() reads
-  // from liabilities first and only falls back to accounts when liabilities is
-  // empty — so without this, an Apple Card user who also has any synced loan or
-  // credit card silently drops the Apple debt from debt views and payoff plans.
+  // Mirror the resolved balance into the liabilities table. getDebts() uses
+  // liabilities as the authoritative source (with rate/min payment/due date)
+  // for any account_id it covers, and falls through to accounts only for
+  // account_ids not in liabilities. Without this upsert, Apple Card debt would
+  // appear only in the fallback path without rate/min-payment metadata.
   // type='credit' matches Plaid's syncLiabilities convention (src/plaid/sync.ts)
   // — keeps debt-view labels consistent across import sources.
   const upsertLiability = db.prepare(
