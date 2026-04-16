@@ -127,5 +127,6 @@ export function runImport(inputPath: string): void {
   console.log(chalk.dim(`  ${backup.memories.length} memories, ${backup.goals.length} goals, ${backup.budgets.length} budgets, ${backup.recat_rules.length} rules`));
   console.log(chalk.dim(`\nNext steps:`));
   console.log(chalk.dim(`  1. Run 'ray link' to re-connect your bank accounts`));
-  console.log(chalk.dim(`  2. Run 'ray sync' to pull transactions\n`));
+  console.log(chalk.dim(`  2. Run 'ray sync' to pull transactions`));
+  console.log(chalk.dim(`  3. Run 'ray import-apple <path>' to re-import Apple Card transactions (if you had any)\n`));
 }

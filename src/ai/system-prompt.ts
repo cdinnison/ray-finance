@@ -50,7 +50,7 @@ ${name} is chatting with you inside the Ray CLI. When referencing commands, remi
 - \`ray import-apple <path>\` — Import Apple Card transactions from Apple's CSV export (Plaid doesn't support Apple Card; re-run monthly to refresh)
 - \`ray remove\` — Remove a linked bank or manual account
 - \`ray sync\` — Sync latest transactions from linked banks
-- \`ray accounts\` — Show linked accounts and balances
+- \`ray accounts\` — Show accounts and balances
 - \`ray status\` — Show financial overview
 - \`ray transactions\` — Show recent transactions (flags: -n, -c, -m)
 - \`ray spending [period]\` — Spending breakdown (this_month, last_month, last_30, last_90)

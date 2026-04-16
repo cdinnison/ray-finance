@@ -90,7 +90,7 @@ program
 
 program
   .command("accounts")
-  .description("Show linked accounts and balances")
+  .description("Show accounts and balances")
   .action(async () => {
     ensureConfigured();
     const { showAccounts } = await import("./commands.js");
@@ -298,7 +298,7 @@ program.configureHelp({
     { name: "add", desc: "Add a manual account (home, car, crypto, etc.)" },
     { name: "remove", desc: "Remove a linked bank or manual account" },
     { name: "sync", desc: "Sync transactions from linked banks" },
-    { name: "accounts", desc: "Show linked accounts and balances" },
+    { name: "accounts", desc: "Show accounts and balances" },
     { name: "status", desc: "Show financial overview" },
     { name: "transactions", desc: "Show recent transactions" },
     { name: "spending", desc: "Show spending breakdown" },

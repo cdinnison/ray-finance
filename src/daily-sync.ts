@@ -22,6 +22,39 @@ export interface SyncResult {
   institutionsSynced: number;
 }
 
+/**
+ * Snapshot today's net worth into net_worth_history.
+ *
+ * Computes assets - liabilities across all accounts and upserts a row for
+ * today. Idempotent per-date (ON CONFLICT UPSERT), so safe to call from
+ * multiple entry points (ray sync, ray import-apple, etc.) on the same day.
+ *
+ * Returns the computed totals for callers that want to display them.
+ */
+export function snapshotNetWorth(db: Database): { assets: number; liabilities: number; netWorth: number } {
+  const assets = db
+    .prepare(
+      `SELECT COALESCE(SUM(current_balance), 0) as total FROM accounts WHERE type IN ('depository', 'investment', 'other')`
+    )
+    .get() as { total: number };
+  const liabs = db
+    .prepare(
+      `SELECT COALESCE(SUM(current_balance), 0) as total FROM accounts WHERE type IN ('credit', 'loan')`
+    )
+    .get() as { total: number };
+
+  const netWorth = assets.total - liabs.total;
+  const today = new Date().toISOString().slice(0, 10);
+
+  db.prepare(
+    `INSERT INTO net_worth_history (date, total_assets, total_liabilities, net_worth)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(date) DO UPDATE SET total_assets=excluded.total_assets, total_liabilities=excluded.total_liabilities, net_worth=excluded.net_worth`
+  ).run(today, assets.total, liabs.total, netWorth);
+
+  return { assets: assets.total, liabilities: liabs.total, netWorth };
+}
+
 /** Run the daily sync for a single database */
 export async function runDailySync(db: Database): Promise<SyncResult> {
   const institutions = db
@@ -147,28 +180,9 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
   }
 
   // Snapshot net worth
-  const assets = db
-    .prepare(
-      `SELECT COALESCE(SUM(current_balance), 0) as total FROM accounts WHERE type IN ('depository', 'investment', 'other')`
-    )
-    .get() as { total: number };
-  const liabs = db
-    .prepare(
-      `SELECT COALESCE(SUM(current_balance), 0) as total FROM accounts WHERE type IN ('credit', 'loan')`
-    )
-    .get() as { total: number };
-
-  const netWorth = assets.total - liabs.total;
-  const today = new Date().toISOString().slice(0, 10);
-
-  db.prepare(
-    `INSERT INTO net_worth_history (date, total_assets, total_liabilities, net_worth)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(date) DO UPDATE SET total_assets=excluded.total_assets, total_liabilities=excluded.total_liabilities, net_worth=excluded.net_worth`
-  ).run(today, assets.total, liabs.total, netWorth);
-
+  const { assets, liabilities, netWorth } = snapshotNetWorth(db);
   console.log(
-    `Net worth snapshot: $${netWorth.toLocaleString()} (assets: $${assets.total.toLocaleString()}, liabilities: $${liabs.total.toLocaleString()})`
+    `Net worth snapshot: $${netWorth.toLocaleString()} (assets: $${assets.toLocaleString()}, liabilities: $${liabilities.toLocaleString()})`
   );
 
   // Apply user-configured recat rules BEFORE computing today's score — the

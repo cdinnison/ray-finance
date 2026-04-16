@@ -8,7 +8,7 @@ import {
 } from "../queries/index.js";
 import { getLatestScore, getAchievements, getMonthlySavings, calculateDailyScore, checkAchievements } from "../scoring/index.js";
 import { generateAlerts } from "../alerts/index.js";
-import { runDailySync } from "../daily-sync.js";
+import { runDailySync, snapshotNetWorth } from "../daily-sync.js";
 import { startLinkServer } from "../server.js";
 import { addManualAccount, getManualAccounts, removeManualAccount, scrapeRedfinEstimate } from "../property.js";
 import { applyRecategorizationRules } from "../recategorization.js";
@@ -852,7 +852,8 @@ export async function runImportApple(
     console.log(`  Date range:    ${result.dateRange.first} → ${result.dateRange.last}`);
   }
   console.log(`  Rows parsed:   ${result.rowsParsed}`);
-  if (result.rowsDeleted > 0) console.log(`  Rows deleted:  ${chalk.yellow(String(result.rowsDeleted))}`);
+  const deleteLabel = opts.dryRun ? "Would delete: " : "Rows deleted:  ";
+  if (result.rowsDeleted > 0) console.log(`  ${deleteLabel} ${chalk.yellow(String(result.rowsDeleted))}`);
   const insertLabel = opts.dryRun ? "Would insert: " : "Rows inserted:";
   const skipLabel = opts.dryRun ? "Would skip:   " : "Rows skipped: ";
   console.log(`  ${insertLabel} ${chalk.green(String(result.rowsInserted))}`);
@@ -879,6 +880,12 @@ export async function runImportApple(
       console.log("");
     }
 
+    // Snapshot net worth so Apple-only users (no Plaid institutions, never
+    // run `ray sync`) still get net_worth_history rows — otherwise the
+    // "from yesterday" delta and net-worth trend queries stay empty/stale.
+    const { netWorth: nw } = snapshotNetWorth(db);
+    console.log(dim(`  Net worth snapshot: $${nw.toLocaleString()}`));
+
     // Backfill daily scores across the imported date range so streaks
     // accumulate properly (each day reads the prior day's daily_scores row)
     // and streak-based achievements (Kitchen Hero, Detoxed, etc.) can unlock.
@@ -888,18 +895,25 @@ export async function runImportApple(
     if (result.dateRange) {
       const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
       const start = result.dateRange.first;
-      const end = yesterday < result.dateRange.last ? yesterday : result.dateRange.last;
-      let d = start;
-      let daysScored = 0;
-      while (d <= end) {
-        calculateDailyScore(db, d);
-        daysScored++;
-        const [y, mo, dy] = d.split("-").map(Number);
-        const next = new Date(Date.UTC(y, mo - 1, dy + 1));
-        d = next.toISOString().slice(0, 10);
-      }
-      if (daysScored > 0) {
-        console.log(dim(`  Scored ${daysScored} day(s), ${start} \u2192 ${end}`));
+      // Always score through yesterday — not just through dateRange.last —
+      // because (a) the "fresh score row" users see must reflect today's
+      // knowledge, and (b) calculateDailyScore chains streaks off the prior
+      // day's daily_scores row, so any retroactive import requires re-scoring
+      // every subsequent day to rebuild the streak chain.
+      const end = yesterday;
+      if (start <= end) {
+        let d = start;
+        let daysScored = 0;
+        while (d <= end) {
+          calculateDailyScore(db, d);
+          daysScored++;
+          const [y, mo, dy] = d.split("-").map(Number);
+          const next = new Date(Date.UTC(y, mo - 1, dy + 1));
+          d = next.toISOString().slice(0, 10);
+        }
+        if (daysScored > 0) {
+          console.log(dim(`  Scored ${daysScored} day(s), ${start} \u2192 ${end}`));
+        }
       }
     }
 
