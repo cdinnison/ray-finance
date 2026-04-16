@@ -378,6 +378,23 @@ describe("getDebts", () => {
     expect(result.debts.map((d) => d.name).sort()).toEqual(["Apple Card", "Car Loan"]);
   });
 
+  it("includes Plaid mortgages with NULL liabilities.current_balance", () => {
+    // Plaid writes current_balance=NULL for mortgages (plaid/sync.ts:410) —
+    // actual balance lives in accounts.current_balance. getDebts must COALESCE.
+    seedAccount(db, { id: "mortgage-1", type: "loan", balance: 350000, name: "Home Mortgage" });
+    db.prepare(
+      `INSERT INTO liabilities (account_id, type, interest_rate, current_balance, minimum_payment, next_payment_due)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run("mortgage-1", "mortgage", 6.5, null, 2100, "2026-05-01");
+
+    const result = getDebts(db);
+    expect(result.totalDebt).toBe(350000);
+    expect(result.debts).toHaveLength(1);
+    expect(result.debts[0].name).toBe("Home Mortgage");
+    expect(result.debts[0].rate).toBe(6.5);
+    expect(result.debts[0].minPayment).toBe(2100);
+  });
+
   it("does not duplicate when an account is in both liabilities and accounts", () => {
     // Plaid-synced credit card: lives in both tables.
     seedAccount(db, { id: "chase-cc", type: "credit", balance: 3000, name: "Chase" });

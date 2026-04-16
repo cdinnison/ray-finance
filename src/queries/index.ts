@@ -472,12 +472,16 @@ export function getDebts(db: Database): {
   // only in `accounts`, so union both sources keyed by account_id —
   // liabilities is authoritative for any account_id it covers, `accounts`
   // fills in the rest.
+  // COALESCE on balance: Plaid writes current_balance=NULL for mortgages and
+  // student loans (plaid/sync.ts:410, 439) — actual balance is in accounts.
   const liabilities = db.prepare(
-    `SELECT a.account_id, a.name, l.current_balance as balance, l.interest_rate as rate,
-       l.minimum_payment as min_payment, l.type, l.next_payment_due as next_due
+    `SELECT a.account_id, a.name,
+       COALESCE(l.current_balance, a.current_balance) as balance,
+       l.interest_rate as rate, l.minimum_payment as min_payment,
+       l.type, l.next_payment_due as next_due
      FROM liabilities l
      JOIN accounts a ON l.account_id = a.account_id
-     WHERE l.current_balance > 0
+     WHERE COALESCE(l.current_balance, a.current_balance) > 0
      ORDER BY l.interest_rate DESC`
   ).all() as any[];
 

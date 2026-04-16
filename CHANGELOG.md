@@ -18,6 +18,7 @@
 - Auto-recategorization rules now fire on rows with a NULL `category` (Apple Card's `Other` and any unmapped Apple category produce these). The `WHERE` guard wasn't null-safe — `NULL != target_category` yields NULL (falsy in SQLite's three-valued logic), silently excluding truly-uncategorized rows. Fixed with `COALESCE(category, '')`.
 - `ray sync` now applies auto-recategorization rules *before* computing today's daily score, so a rule like "Amazon → `GENERAL_MERCHANDISE_ONLINE`" influences the same-day `shopping_count` and scoring. Previously the score reflected pre-rule categories and wouldn't catch up until the next sync. The score result is unchanged for users with no rules. Aligns `ray sync` with `ray import-apple`, which was already recat-first.
 - `ray score` and the AI's `get_score` tool now suggest `ray import-apple` alongside `ray sync` when no daily scores exist yet. Previously both only mentioned `ray sync`, which is stale guidance for Apple-only users.
+- `getDebts()` no longer drops Plaid-synced mortgages and student loans from debt views. These liability types store `current_balance = NULL` in the `liabilities` table (actual balance is in `accounts`); the recent getDebts union fix filtered `WHERE l.current_balance > 0`, excluding them. Now uses `COALESCE(l.current_balance, a.current_balance)`.
 - `categoryLabel()` no longer crashes on null/undefined categories — previously threw `Cannot read properties of null (reading 'split')` when the AI chat tool encountered a transaction with a null category.
 
 ## 0.4.0
