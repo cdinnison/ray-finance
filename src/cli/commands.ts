@@ -149,7 +149,7 @@ export async function showAccounts(): Promise<void> {
       const logo = await renderLogo(first.logo);
       if (logo) logoStr = logo.replace(/\n/g, "") + " ";
     }
-    const manualLabel = first.access_token === "manual" ? dim(" (manual)") : "";
+    const manualLabel = first.item_id === "manual-apple" ? dim(" (manual)") : "";
     console.log(`${logoStr}${institutionName(first.institution, first.primary_color)}${manualLabel}`);
 
     for (const row of rows) {
