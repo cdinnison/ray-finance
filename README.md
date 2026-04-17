@@ -195,6 +195,49 @@ PLAID_TOKEN_SECRET=         # Key for encrypting stored Plaid tokens
 RAY_API_KEY=                # Ray API key (managed mode, replaces the above)
 ```
 
+## Claude Code (MCP)
+
+Ray exposes its 31 tools as an [MCP](https://modelcontextprotocol.io) server over stdio. Any MCP client — Claude Code, Cursor, etc. — can call Ray tools directly.
+
+### Setup
+
+```bash
+claude mcp add ray -- ray mcp
+```
+
+That's it. Claude Code can now read your accounts, spending, goals, and more.
+
+### Available tools
+
+All tools are prefixed `ray_` (e.g. `ray_get_accounts`, `ray_get_spending_summary`).
+
+**Read tools** (always available): `get_net_worth`, `get_accounts`, `get_transactions`, `get_spending_summary`, `get_budgets`, `get_goals`, `get_score`, `get_recurring`, `get_alerts`, `get_memories`, `get_income`, `search_transactions`, `cash_flow`, `forecast_balance`, `compare_spending`, `get_net_worth_trend`, `get_monthly_savings`, `get_portfolio`, `investment_performance`, `get_debts`, `calculate_debt_payoff`
+
+**Mutation tools** (opt-in): `set_budget`, `delete_budget`, `set_goal`, `delete_goal`, `update_goal_progress`, `categorize_transaction`, `label_transaction`, `add_recat_rule`, `save_memory`, `update_context`
+
+### Enable mutations
+
+Edit `~/.ray/config.json`:
+
+```json
+{
+  "mcpMutations": true
+}
+```
+
+Or set `RAY_MCP_MUTATIONS=true` in your environment.
+
+### Example prompts
+
+**Read-only (default):**
+- "What's my net worth?"
+- "How much did I spend on food this month?"
+- "Show me my budget status"
+
+**With mutations enabled:**
+- "Set a $500/month grocery budget"
+- "Create a goal to save $10k for a vacation by December"
+
 ## Roadmap
 
 - [x] Bring your own model — use any LLM provider (OpenAI, Ollama, open-source models, etc.)

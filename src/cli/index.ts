@@ -268,6 +268,15 @@ program
   });
 
 
+program
+  .command("mcp")
+  .description("Start MCP server for Claude Code (stdio)")
+  .action(async () => {
+    ensureConfigured();
+    const { startMcpServer } = await import("../mcp/server.js");
+    await startMcpServer();
+  });
+
 function ensureConfigured(): void {
   if (isDemoMode) return;
   if (!isConfigured()) {
@@ -299,6 +308,7 @@ program.configureHelp({
     { name: "billing", desc: "Manage your Ray subscription" },
     { name: "update", desc: "Update Ray to the latest version" },
     { name: "doctor", desc: "Check system health" },
+    { name: "mcp", desc: "Start MCP server (stdio, for Claude Code)" },
     { name: "demo", desc: "Seed a demo database with fake data" },
   ]),
 });
