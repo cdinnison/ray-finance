@@ -1,8 +1,8 @@
 import { randomUUID } from "crypto";
-import type { InstitutionProvider } from "../types.js";
+import type { Database, InstitutionProvider, InstitutionRecord } from "../types.js";
 import { parseProviderState, stringifyProviderState } from "../state.js";
 import { buildBridgeProviderState, describeBridgeProviderState, isBridgeItemSyncableStatus, type BridgeProviderState } from "./status.js";
-import { BridgeClient, type BridgeAccount, type BridgeItem, type BridgeTransaction } from "./client.js";
+import { BridgeApiError, BridgeClient, type BridgeAccount, type BridgeItem, type BridgeTransaction } from "./client.js";
 import { config, saveConfig } from "../../config.js";
 
 function sleep(ms: number): Promise<void> {
@@ -52,15 +52,15 @@ async function maybeResolveProviderName(client: BridgeClient, item: BridgeItem, 
 }
 
 function upsertBridgeInstitution(
-  db: import("../types.js").Database,
+  db: Database,
   item: BridgeItem,
   externalUserId: string,
   providerName: string | null,
-): import("../types.js").InstitutionRecord {
+): InstitutionRecord {
   const existing = db.prepare(
     `SELECT item_id, provider, access_token, provider_user_id, provider_state, name, products, cursor, primary_color, logo, created_at
      FROM institutions WHERE item_id = ?`,
-  ).get(String(item.id)) as import("../types.js").InstitutionRecord | undefined;
+  ).get(String(item.id)) as InstitutionRecord | undefined;
 
   const currentState = parseProviderState<BridgeProviderState>(existing?.provider_state);
   const nextState = buildBridgeProviderState(item, { ...currentState, externalUserId }, providerName);
@@ -87,12 +87,12 @@ function upsertBridgeInstitution(
   return db.prepare(
     `SELECT item_id, provider, access_token, provider_user_id, provider_state, name, products, cursor, primary_color, logo, created_at
      FROM institutions WHERE item_id = ?`,
-  ).get(String(item.id)) as import("../types.js").InstitutionRecord;
+  ).get(String(item.id)) as InstitutionRecord;
 }
 
 function upsertBridgeAccounts(
-  db: import("../types.js").Database,
-  institution: import("../types.js").InstitutionRecord,
+  db: Database,
+  institution: InstitutionRecord,
   accounts: BridgeAccount[],
 ): Set<string> {
   const upsert = db.prepare(`
@@ -154,7 +154,7 @@ function upsertBridgeAccounts(
 }
 
 function syncBridgeTransactions(
-  db: import("../types.js").Database,
+  db: Database,
   transactions: BridgeTransaction[],
   accountIds: Set<string>,
 ): { added: number; latestUpdatedAt: string | null } {
@@ -251,13 +251,13 @@ async function pollForBridgeItems(
   throw new Error("Timed out waiting for Bridge Connect to finish.");
 }
 
-function getReconnectCandidates(db: import("../types.js").Database): import("../types.js").InstitutionRecord[] {
+function getReconnectCandidates(db: Database): InstitutionRecord[] {
   const rows = db.prepare(
     `SELECT item_id, provider, access_token, provider_user_id, provider_state, name, products, cursor, primary_color, logo, created_at
      FROM institutions
      WHERE provider = 'bridge'
      ORDER BY created_at DESC`,
-  ).all() as import("../types.js").InstitutionRecord[];
+  ).all() as InstitutionRecord[];
 
   return rows.filter(row => {
     const state = parseProviderState<BridgeProviderState>(row.provider_state);
@@ -265,7 +265,7 @@ function getReconnectCandidates(db: import("../types.js").Database): import("../
   });
 }
 
-function getLinkedBridgeItemIds(db: import("../types.js").Database): Set<string> {
+function getLinkedBridgeItemIds(db: Database): Set<string> {
   const rows = db.prepare(
     `SELECT item_id
      FROM institutions
@@ -276,8 +276,8 @@ function getLinkedBridgeItemIds(db: import("../types.js").Database): Set<string>
 }
 
 async function promptBridgeConnectTarget(
-  db: import("../types.js").Database,
-): Promise<{ reconnectInstitution?: import("../types.js").InstitutionRecord; externalUserMode: "auto" | "existing"; externalUserId?: string; userEmail?: string }> {
+  db: Database,
+): Promise<{ reconnectInstitution?: InstitutionRecord; externalUserMode: "auto" | "existing"; externalUserId?: string; userEmail?: string }> {
   const inquirer = (await import("inquirer")).default;
   const reconnectCandidates = getReconnectCandidates(db);
 
@@ -368,8 +368,8 @@ function resolveBridgeExternalUserId(mode: "auto" | "existing", explicit?: strin
 }
 
 export async function syncBridgeInstitution(
-  db: import("../types.js").Database,
-  institution: import("../types.js").InstitutionRecord,
+  db: Database,
+  institution: InstitutionRecord,
   client: BridgeClient,
 ) {
   const state = parseProviderState<BridgeProviderState>(institution.provider_state);
@@ -384,7 +384,8 @@ export async function syncBridgeInstitution(
   }
 
   const accessToken = await client.ensureAccessToken(externalUserId);
-  const item = await client.getItem(accessToken, institution.item_id).catch(async () => {
+  const item = await client.getItem(accessToken, institution.item_id).catch(async (error) => {
+    if (!(error instanceof BridgeApiError) || error.status !== 404) throw error;
     const items = await client.listItems(accessToken);
     const match = items.find(candidate => String(candidate.id) === institution.item_id);
     if (!match) throw new Error(`Bridge item ${institution.item_id} not found.`);
@@ -498,6 +499,7 @@ export function createBridgeProvider(clientFactory: () => BridgeClient = () => n
       console.log(`Opening Bridge Connect in your browser...\n`);
       console.log(`  ${connectSession.url}\n`);
       console.log(`Return here after you finish the Bridge flow. Ray will detect the completed item automatically.\n`);
+      console.log("Press Ctrl+C to cancel waiting.\n");
 
       await open(connectSession.url);
 

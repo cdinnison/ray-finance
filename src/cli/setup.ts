@@ -337,7 +337,7 @@ export async function runSetup(): Promise<void> {
       },
       {
         theme,
-        type: "password",
+        type: "input",
         name: "bridgeClientId",
         message: "Bridge client ID (enter to skip):",
         default: config.bridgeClientId || undefined,

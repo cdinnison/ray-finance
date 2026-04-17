@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "libsql";
 import { migrate } from "../db/schema.js";
+import { config } from "../config.js";
 import {
   formatMoney,
   categoryLabel,
@@ -57,20 +58,33 @@ function daysAgo(n: number): string {
   return new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
 }
 
+const ORIGINAL_DISPLAY_LOCALE = config.displayLocale;
+const ORIGINAL_DISPLAY_CURRENCY = config.displayCurrency;
+
+afterEach(() => {
+  config.displayLocale = ORIGINAL_DISPLAY_LOCALE;
+  config.displayCurrency = ORIGINAL_DISPLAY_CURRENCY;
+});
+
 // ─── Pure functions ───
 
 describe("formatMoney", () => {
   it("formats positive", () => {
-    expect(formatMoney(1234.5)).toMatch(/\d/);
-    expect(formatMoney(1234.5)).toContain("1");
+    config.displayLocale = "en-US";
+    config.displayCurrency = "USD";
+    expect(formatMoney(1234.5)).toBe("$1,234.50");
   });
 
   it("formats negative as absolute", () => {
-    expect(formatMoney(-99)).toBe(formatMoney(99));
+    config.displayLocale = "en-US";
+    config.displayCurrency = "USD";
+    expect(formatMoney(-99)).toBe("$99.00");
   });
 
   it("formats zero", () => {
-    expect(formatMoney(0)).toMatch(/0/);
+    config.displayLocale = "en-US";
+    config.displayCurrency = "USD";
+    expect(formatMoney(0)).toBe("$0.00");
   });
 });
 

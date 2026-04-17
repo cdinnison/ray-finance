@@ -172,6 +172,12 @@ export async function runDoctor(): Promise<void> {
     checks.push({ label: "Banking (Bridge)", status: "warn", detail: `Optional. Add via ${chalk.bold("ray setup")}` });
   }
 
+  checks.push({
+    label: "Display format",
+    status: "ok",
+    detail: `${config.displayLocale} / ${config.displayCurrency || "auto"} (set RAY_DISPLAY_LOCALE and RAY_DISPLAY_CURRENCY)`,
+  });
+
   // ── Sync schedule ──
   if (config.syncSchedule) {
     const installed = isSyncScheduleInstalled();
