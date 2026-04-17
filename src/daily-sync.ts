@@ -199,7 +199,7 @@ export async function runDailySync(
   // score reads category/subcategory directly from transactions, so rules
   // that the user cares about (e.g. Amazon -> ONLINE_SHOPPING) should shape
   // the score they see on the same day the sync ran, not tomorrow's.
-  applyRecategorizationRules(db);
+  applyRecategorizationRules(db, logger);
 
   // Calculate daily score for yesterday
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
