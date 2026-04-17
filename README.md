@@ -3,7 +3,11 @@
 </p>
 
 <p align="center">
-  An open-source AI financial advisor that learns your situation and gets smarter every conversation.
+  <strong>Other finance apps show you what you spent. Ray tells you what to do.</strong>
+</p>
+
+<p align="center">
+  The open-source AI financial advisor that turns your real bank data into your next move.
 </p>
 
 <p align="center">
@@ -18,7 +22,21 @@
   <img src=".github/ray-demo.png" alt="Ray demo" width="100%" />
 </p>
 
-Tell Ray about your family, goals, and financial strategy once. From then on, every answer is grounded in your real situation — not generic advice. It connects to your bank, tracks your net worth and spending, and gives you a financial briefing before you type a word. Open source. Local-first. Encrypted.
+You already know where the money went. That's the easy part — every app does it. The part that's missing is what to do about it. Ray is that part.
+
+Tell Ray about your family, goals, and strategy once. From then on, every answer is a real recommendation grounded in your actual numbers — not another chart, not generic advice. Ask "can I afford this?" and Ray gives you a yes, a no, or a "not yet, and here's what would change that." Open source. Local-first. Encrypted.
+
+## Why Ray is different
+
+**Dashboards show. Ray tells.** Monarch, Copilot, YNAB, Mint — they sort your transactions into pie charts and call it insight. You still have to figure out what to do next. Ray closes that loop: it takes your real bank data, factors in your goals and situation, and hands you the decision.
+
+Example — you ask "how should I deal with my debt?"
+
+- **ChatGPT:** "Aim to save 15–20% of your income. Consider a 3–6 month emergency fund, then focus on high-interest debt."
+- **Your budgeting app:** A pie chart of debt payments by month.
+- **Ray:** "You've got $34,200 across two cards and a car loan. At $95k with a baby coming in March, pause the Japan fund and throw that $440/mo at the Chase card — it's at 24.9%. That clears it by September and frees up $340/mo before the baby arrives."
+
+That's the difference. Ray doesn't describe your situation back to you. It tells you what to do about it.
 
 ## Features
 

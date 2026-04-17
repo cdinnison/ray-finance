@@ -25,7 +25,7 @@ export default function ComparePage() {
         <PageHeader
           label="Compare"
           title="How Ray compares"
-          subtitle="Honest, side-by-side comparisons with the most popular personal finance tools. We note where competitors are stronger — and where Ray's local-first AI approach wins."
+          subtitle="Most finance apps show you what you spent. Ray tells you what to do. Honest, side-by-side comparisons with the most popular personal finance tools — where they're stronger, and where Ray's local-first AI actually closes the loop."
         />
 
         {/* Head-to-Head */}

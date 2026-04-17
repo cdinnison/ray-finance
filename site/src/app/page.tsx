@@ -10,7 +10,7 @@ const jsonLd = {
   "@type": "SoftwareApplication",
   name: "Ray Finance",
   description:
-    "An open-source AI financial advisor that learns your full situation and gives personalized advice from your real bank data — running locally on your machine.",
+    "Other finance apps show you what you spent. Ray tells you what to do. An open-source AI financial advisor that learns your full situation, uses your real bank data, and runs locally on your machine.",
   applicationCategory: "FinanceApplication",
   applicationSubCategory: "AI Financial Advisor",
   operatingSystem: "macOS, Linux, Windows",
@@ -48,7 +48,7 @@ const faqItems = [
   {
     question: "What does Ray do?",
     answer:
-      "Ray is an AI financial advisor that learns your full situation — your family, income, goals, strategy, and key decisions — and keeps a persistent profile that evolves over time. It connects to your bank via Plaid and answers questions like \"can I afford this trip?\" and \"should I pay off debt or invest?\" using your actual financial data. Instead of generic advice, Ray gives answers grounded in your specific context. It gets smarter the more you use it.",
+      "Every other finance app shows you what you spent. Ray tells you what to do about it. It's an AI financial advisor that connects to your bank via Plaid and learns your full situation — family, income, goals, strategy, and key decisions. Ask \"can I afford this trip?\" or \"should I pay off debt or invest?\" and Ray gives you a real recommendation grounded in your actual numbers, not generic advice. Every answer ends with a next move, not another chart.",
   },
   {
     question: "How does Ray keep my financial data private?",
@@ -58,7 +58,7 @@ const faqItems = [
   {
     question: "How is Ray different from Monarch, Copilot, or YNAB?",
     answer:
-      "Those apps sort your transactions into categories and show you dashboards. Ray takes a different approach: it's a conversational AI advisor that answers financial questions using your real data. Ask \"how many months of runway do I have?\" and Ray queries your actual bank data, runs the math, and gives you a direct answer. Ray also keeps all data local on your machine instead of on cloud servers, and can be self-hosted for free — because a tool that helps you manage your money shouldn't be another expense you have to budget for.",
+      "Those apps show you what happened. They sort your transactions into pie charts and send you notifications — and the work of figuring out what to do with that information is still yours. Ray closes that loop. Ask \"how should I tackle my debt?\" and instead of a chart of your minimum payments, Ray says \"throw $440/mo at the Chase card first — it's at 24.9% — that clears it by September.\" Ray also keeps all data local on your machine instead of on cloud servers, and can be self-hosted for free.",
   },
   {
     question: "What can I ask Ray?",
@@ -159,7 +159,7 @@ function Hero() {
           Talk to your&nbsp;money
         </h1>
         <p className="animate-fade-up-delay-1 mx-auto mt-5 max-w-2xl text-lg leading-relaxed text-stone-500 sm:text-xl">
-          Ray is an AI financial advisor that connects to your bank, understands your full picture, and gives real advice&mdash;all local on your machine.
+          Every other finance app shows you what you spent. <span className="text-stone-900 font-medium">Ray tells you what to do about it</span>&mdash;using your real bank data, running locally on your machine.
         </p>
         <div className="animate-fade-up-delay-2 mt-10 flex flex-col items-center gap-4">
           <CopyCommand
@@ -253,18 +253,22 @@ function Story() {
     <section id="story" className="py-24 sm:py-32">
       <div className="mx-auto max-w-3xl px-6">
         <h2 className="text-center text-3xl font-extrabold tracking-tight text-stone-950 sm:text-4xl">
-          You&rsquo;ve tried<br className="sm:hidden" /> everything&nbsp;else.
+          You know what you&nbsp;spent.<br className="sm:hidden" /> Now&nbsp;what?
         </h2>
+        <p className="mx-auto mt-5 max-w-2xl text-center text-lg leading-relaxed text-stone-500">
+          Every finance tool ever built is great at showing you the past. None of them tell you what to do next. That&rsquo;s the gap Ray fills.
+        </p>
 
         <div className="mt-16 space-y-16">
           <StoryBlock
             label="The Apps"
             icon={<svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><rect x="5" y="2" width="14" height="20" rx="2" /><path d="M12 18h.01" /></svg>}
-            title="Dashboards show you what happened."
-            body="Monarch, Copilot, YNAB — they sort your transactions into
-              pie charts and send you notifications. They're good at showing
-              you what you spent. They never tell you what to do about it.
-              And when your subscription expires, so does your data."
+            title="Dashboards show. They don't tell."
+            body="Monarch, Copilot, YNAB, Mint — they sort your transactions
+              into pie charts and send you notifications. They're great at
+              showing you what you spent. Then they stop. What to do about it
+              is still your job. And when your subscription expires, so does
+              your data."
           />
 
           <StoryBlock
@@ -273,9 +277,9 @@ function Story() {
             title="Powerful, but you still do all the work."
             body="You built the perfect spreadsheet once. Formulas, projections,
               a debt payoff timeline. Even with Tiller syncing your data,
-              you're still the one analyzing it, updating formulas, and
-              deciding what it means. The spreadsheet never tells you
-              what to do next."
+              you're still the one analyzing rows, updating formulas, and
+              deciding what any of it means. The spreadsheet never tells you
+              what to do next, either."
           />
 
           <div>
@@ -284,15 +288,16 @@ function Story() {
               Then there&rsquo;s Ray
             </p>
             <h3 className="mt-3 text-2xl font-bold tracking-tight text-stone-950">
-              The advisor you&rsquo;d hire if they weren&rsquo;t $200/hour.
+              The only one that actually tells you what to do.
             </h3>
             <p className="mt-4 text-lg leading-relaxed text-stone-500">
-              Ray remembers your goals, your family, your strategy, and
-              every decision you&rsquo;ve made together. When you ask
-              &ldquo;can I afford this?&rdquo; it doesn&rsquo;t give generic
-              advice&nbsp;&mdash; it factors in your real situation, connects
-              to your bank, queries your actual data, and gives you a real
-              answer. Every conversation builds on the last.
+              Ask &ldquo;can I afford this?&rdquo; and you don&rsquo;t get
+              another chart&nbsp;&mdash; you get a yes, a no, or a
+              &ldquo;not yet, and here&rsquo;s what would change that.&rdquo;
+              Ray factors in your real situation, queries your actual bank
+              data, and hands you a decision. It remembers your goals, your
+              family, your strategy, and every call you&rsquo;ve made
+              together. Every conversation ends with a next move.
             </p>
           </div>
         </div>
@@ -465,10 +470,11 @@ function Context() {
             </h2>
             <p className="mt-4 text-lg leading-relaxed text-stone-500">
               Ray keeps a persistent profile of your life&nbsp;&mdash; family,
-              income, goals, strategy, and key decisions. When your situation
-              changes, Ray updates it automatically. The advice you get on
-              day&nbsp;30 is nothing like day&nbsp;one, because Ray knows what
-              happened on days&nbsp;1&nbsp;through&nbsp;29.
+              income, goals, strategy, and key decisions. That&rsquo;s why it
+              can tell you what to do, not just show you what you spent. The
+              advice you get on day&nbsp;30 is nothing like day&nbsp;one,
+              because Ray remembers everything that happened on
+              days&nbsp;1&nbsp;through&nbsp;29.
             </p>
           </div>
 
@@ -653,11 +659,11 @@ function Features() {
           What Ray can do
         </p>
         <h2 className="mt-4 text-3xl font-extrabold tracking-tight text-stone-950 sm:text-4xl">
-          Not a dashboard. Not a chatbot. A financial brain that actually knows your situation.
+          Not a dashboard. Not a chatbot. An advisor that tells you what to do.
         </h2>
         <p className="mt-4 max-w-2xl text-lg text-stone-500">
-          Ray has 30+ tools that query your real financial data. It looks
-          things up, runs calculations, and takes action.
+          Ray has 30+ tools that query your real bank data, run the math, and
+          hand you the next move &mdash; not another chart.
         </p>
 
         <div className="mt-16 grid gap-x-12 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
@@ -946,11 +952,11 @@ function CTA() {
     <section className="bg-stone-950 py-24 sm:py-32">
       <div className="mx-auto max-w-3xl px-6 text-center">
         <h2 className="text-2xl leading-[1.3] font-extrabold tracking-tight text-white sm:text-3xl lg:text-5xl">
-          Feel in control of your money&nbsp;again.
+          Stop tracking.<br /> Start&nbsp;deciding.
         </h2>
         <p className="mx-auto mt-6 max-w-xl text-lg text-stone-400">
-          Ray is free, open source, and takes five minutes to set up.
-          Your data never leaves your machine.
+          Every other finance app shows you what you spent. Ray tells you
+          what to do. Free, open source, and takes five minutes to set up.
         </p>
         <div className="mt-10 flex flex-col items-center gap-6">
           <CopyCommand
