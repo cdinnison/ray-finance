@@ -21,8 +21,18 @@ export interface SyncResult {
   institutionsSynced: number;
 }
 
+export interface SyncLogger {
+  log(...args: any[]): void;
+  error(...args: any[]): void;
+}
+
+export const SILENT_LOGGER: SyncLogger = { log: () => {}, error: () => {} };
+
 /** Run the daily sync for a single database */
-export async function runDailySync(db: Database): Promise<SyncResult> {
+export async function runDailySync(
+  db: Database,
+  logger: SyncLogger = console,
+): Promise<SyncResult> {
   const institutions = db
     .prepare(`SELECT item_id, access_token, name, products, cursor, primary_color FROM institutions`)
     .all() as {
@@ -35,7 +45,7 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
   }[];
 
   if (institutions.length === 0) {
-    console.log("No linked institutions.");
+    logger.log("No linked institutions.");
     return { transactionsAdded: 0, institutionsSynced: 0 };
   }
 
@@ -44,7 +54,7 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
 
   for (const inst of institutions) {
     if (inst.access_token === "manual") {
-      console.log(`Skipping ${inst.name} (manual entry)`);
+      logger.log(`Skipping ${inst.name} (manual entry)`);
       continue;
     }
 
@@ -52,12 +62,12 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
     let accessToken: string;
     try {
       if (!config.plaidTokenSecret) {
-        console.error(`  Skipping ${inst.name}: no plaidTokenSecret configured`);
+        logger.error(`  Skipping ${inst.name}: no plaidTokenSecret configured`);
         continue;
       }
       accessToken = decryptPlaidToken(inst.access_token, config.plaidTokenSecret);
     } catch {
-      console.error(`  Skipping ${inst.name}: failed to decrypt access token (wrong key or corrupt data)`);
+      logger.error(`  Skipping ${inst.name}: failed to decrypt access token (wrong key or corrupt data)`);
       continue;
     }
 
@@ -70,14 +80,14 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
       // Non-fatal — use stored products
     }
 
-    console.log(`Syncing: ${institutionName(inst.name, inst.primary_color)} (${products.join(", ")})`);
+    logger.log(`Syncing: ${institutionName(inst.name, inst.primary_color)} (${products.join(", ")})`);
 
     try {
       instSynced++;
 
       // Always sync balances
       const accountCount = await syncBalances(db, accessToken);
-      console.log(`  Accounts: ${accountCount}`);
+      logger.log(`  Accounts: ${accountCount}`);
 
       // Sync transactions if available
       if (products.includes("transactions")) {
@@ -88,7 +98,7 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
           inst.cursor
         );
         totalAdded += txResult.added;
-        console.log(
+        logger.log(
           `  Transactions: +${txResult.added} ~${txResult.modified} -${txResult.removed}`
         );
       }
@@ -97,18 +107,18 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
       if (products.includes("investments")) {
         try {
           const invResult = await syncInvestments(db, accessToken);
-          console.log(
+          logger.log(
             `  Investments: ${invResult.holdings} holdings, ${invResult.securities} securities`
           );
         } catch (e) {
-          if (!isProductNotSupported(e)) console.error(`  Investments error: ${(e as Error).message}`);
+          if (!isProductNotSupported(e)) logger.error(`  Investments error: ${(e as Error).message}`);
         }
 
         try {
           const invTxResult = await syncInvestmentTransactions(db, accessToken);
-          console.log(`  Investment transactions: ${invTxResult.transactions}`);
+          logger.log(`  Investment transactions: ${invTxResult.transactions}`);
         } catch (e) {
-          if (!isProductNotSupported(e)) console.error(`  Investment transactions error: ${(e as Error).message}`);
+          if (!isProductNotSupported(e)) logger.error(`  Investment transactions error: ${(e as Error).message}`);
         }
       }
 
@@ -116,9 +126,9 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
       if (products.includes("liabilities")) {
         try {
           await syncLiabilities(db, accessToken);
-          console.log(`  Liabilities: synced`);
+          logger.log(`  Liabilities: synced`);
         } catch (e) {
-          if (!isProductNotSupported(e)) console.error(`  Liabilities error: ${(e as Error).message}`);
+          if (!isProductNotSupported(e)) logger.error(`  Liabilities error: ${(e as Error).message}`);
         }
       }
 
@@ -126,13 +136,13 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
       if (products.includes("transactions")) {
         try {
           const recResult = await syncRecurring(db, accessToken);
-          console.log(`  Recurring: ${recResult.outflows} outflows, ${recResult.inflows} inflows`);
+          logger.log(`  Recurring: ${recResult.outflows} outflows, ${recResult.inflows} inflows`);
         } catch (e) {
-          if (!isProductNotSupported(e)) console.error(`  Recurring error: ${(e as Error).message}`);
+          if (!isProductNotSupported(e)) logger.error(`  Recurring error: ${(e as Error).message}`);
         }
       }
     } catch (err: any) {
-      console.error(`  Error syncing ${inst.name}: ${err.message}`);
+      logger.error(`  Error syncing ${inst.name}: ${err.message}`);
     }
   }
 
@@ -166,19 +176,19 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
      ON CONFLICT(date) DO UPDATE SET total_assets=excluded.total_assets, total_liabilities=excluded.total_liabilities, net_worth=excluded.net_worth`
   ).run(today, assets.total, liabs.total, netWorth);
 
-  console.log(
+  logger.log(
     `Net worth snapshot: $${netWorth.toLocaleString()} (assets: $${assets.total.toLocaleString()}, liabilities: $${liabs.total.toLocaleString()})`
   );
 
   // Calculate daily score for yesterday
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const dailyScore = calculateDailyScore(db, yesterday);
-  console.log(`  Daily score (${yesterday}): ${dailyScore.score}/100`);
+  logger.log(`  Daily score (${yesterday}): ${dailyScore.score}/100`);
 
   const newAchievements = checkAchievements(db);
   if (newAchievements.length > 0) {
     for (const a of newAchievements) {
-      console.log(`  Achievement unlocked: ${a.name} — ${a.description}`);
+      logger.log(`  Achievement unlocked: ${a.name} — ${a.description}`);
     }
   }
 
@@ -198,7 +208,7 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
     // Validate match_field to prevent SQL injection — only allow known column names
     const allowedFields = ["name", "merchant_name", "category", "subcategory"];
     if (!allowedFields.includes(rule.match_field)) {
-      console.error(`  Skipping recat rule with invalid match_field: ${rule.match_field}`);
+      logger.error(`  Skipping recat rule with invalid match_field: ${rule.match_field}`);
       continue;
     }
 
@@ -211,15 +221,15 @@ export async function runDailySync(db: Database): Promise<SyncResult> {
         ).run(rule.target_category, rule.match_pattern, rule.target_category);
 
     if (result.changes > 0) {
-      console.log(`  Recategorized ${result.changes} txn(s): ${rule.label || rule.match_pattern}`);
+      logger.log(`  Recategorized ${result.changes} txn(s): ${rule.label || rule.match_pattern}`);
       totalRecat += result.changes;
     }
   }
   if (totalRecat > 0) {
-    console.log(`Auto-recategorized ${totalRecat} transaction(s).`);
+    logger.log(`Auto-recategorized ${totalRecat} transaction(s).`);
   }
 
-  console.log("Sync complete.");
+  logger.log("Sync complete.");
   return { transactionsAdded: totalAdded, institutionsSynced: instSynced };
 }
 

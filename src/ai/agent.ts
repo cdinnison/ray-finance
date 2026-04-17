@@ -40,10 +40,19 @@ export type ProgressCallback = (event: {
   elapsedMs: number;
 }) => void;
 
+/** Thrown by handleMessage when the caller aborts via AbortSignal */
+export class AbortedError extends Error {
+  constructor() {
+    super("aborted");
+    this.name = "AbortedError";
+  }
+}
+
 export async function handleMessage(
   db: Database.Database,
   userMessage: string,
   onProgress?: ProgressCallback,
+  signal?: AbortSignal,
 ): Promise<string> {
   // Save incoming message
   saveMessage(db, "user", userMessage);
@@ -78,7 +87,13 @@ export async function handleMessage(
     && provider.supportsThinking
     && supportsThinking(config.model);
 
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw new AbortedError();
+  };
+
   try {
+    throwIfAborted();
+
     // Initial API call
     let response = await provider.sendMessage({
       model: config.model,
@@ -89,6 +104,7 @@ export async function handleMessage(
       thinking: useThinking
         ? { type: "enabled", budget_tokens: config.thinkingBudget }
         : undefined,
+      signal,
     });
 
     // Agentic tool loop
@@ -96,6 +112,7 @@ export async function handleMessage(
     let toolCount = 0;
 
     while (response.stopReason === "tool_use" && toolCount < MAX_TOOL_STEPS) {
+      throwIfAborted();
       messages.push({ role: "assistant", content: response.content });
 
       const toolResults: NormalizedToolResult[] = [];
@@ -127,6 +144,8 @@ export async function handleMessage(
         elapsedMs: Date.now() - startTime,
       });
 
+      throwIfAborted();
+
       response = await provider.sendMessage({
         model: config.model,
         maxTokens: useThinking ? 16000 : 4096,
@@ -136,6 +155,7 @@ export async function handleMessage(
         thinking: useThinking
           ? { type: "enabled", budget_tokens: config.thinkingBudget }
           : undefined,
+        signal,
       });
     }
 
@@ -148,6 +168,9 @@ export async function handleMessage(
 
     return responseText || "I looked into that but couldn't formulate a response. Could you try rephrasing?";
   } catch (error: any) {
+    if (error instanceof AbortedError || error?.name === "AbortError" || signal?.aborted) {
+      throw new AbortedError();
+    }
     if (error.status === 403) {
       if (useManaged()) {
         return "Your API key was rejected. This usually means your subscription is inactive. Run `ray billing` to check your payment status, or `ray setup` to reconfigure.";

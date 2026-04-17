@@ -30,20 +30,26 @@ export function createOpenAICompatibleProvider(opts: {
       // fall back to max_completion_tokens if rejected (newer OpenAI models require it)
       let response;
       try {
-        response = await client.chat.completions.create({
-          model: params.model,
-          max_tokens: params.maxTokens,
-          messages,
-          tools: tools.length > 0 ? tools : undefined,
-        });
-      } catch (e: any) {
-        if (e.status === 400 && e.message?.includes("max_tokens")) {
-          response = await client.chat.completions.create({
+        response = await client.chat.completions.create(
+          {
             model: params.model,
-            max_completion_tokens: params.maxTokens,
+            max_tokens: params.maxTokens,
             messages,
             tools: tools.length > 0 ? tools : undefined,
-          });
+          },
+          { signal: params.signal },
+        );
+      } catch (e: any) {
+        if (e.status === 400 && e.message?.includes("max_tokens")) {
+          response = await client.chat.completions.create(
+            {
+              model: params.model,
+              max_completion_tokens: params.maxTokens,
+              messages,
+              tools: tools.length > 0 ? tools : undefined,
+            },
+            { signal: params.signal },
+          );
         } else {
           throw e;
         }

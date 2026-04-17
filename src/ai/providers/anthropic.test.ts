@@ -97,7 +97,8 @@ describe("AnthropicProvider", () => {
     expect(mockCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         thinking: { type: "enabled", budget_tokens: 8000 },
-      })
+      }),
+      expect.anything(),
     );
   });
 

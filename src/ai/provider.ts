@@ -52,6 +52,7 @@ export interface SendMessageParams {
   tools: ToolDefinition[];
   maxTokens: number;
   thinking?: { type: "enabled"; budget_tokens: number };
+  signal?: AbortSignal;
 }
 
 export interface Provider {

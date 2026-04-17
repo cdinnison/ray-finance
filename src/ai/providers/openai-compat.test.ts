@@ -107,7 +107,8 @@ describe("OpenAICompatibleProvider", () => {
             parameters: { type: "object", properties: {}, required: [] },
           },
         }],
-      })
+      }),
+      expect.anything(),
     );
   });
 
