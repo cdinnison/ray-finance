@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { config } from "../config.js";
+import { canLinkAnyProvider, config } from "../config.js";
 import { banner } from "./format.js";
 
 /**
@@ -25,15 +25,15 @@ export async function startChat(): Promise<void> {
     console.log("");
     console.log(briefing);
   } else {
-    console.log(chalk.bold(`ray`) + chalk.dim(` — ${config.userName}`));
+    console.log(chalk.bold("ray") + chalk.dim(` — ${config.userName}`));
   }
   console.log("");
 
   // Require at least one linked account
   const hasAccounts = db.prepare("SELECT COUNT(*) as count FROM accounts").get() as { count: number };
   if (hasAccounts.count === 0) {
-    if (!config.plaidClientId || !config.plaidSecret) {
-      console.log(chalk.yellow("No accounts linked. Add Plaid credentials via 'ray setup', then run 'ray link'.\n"));
+    if (!canLinkAnyProvider()) {
+      console.log(chalk.yellow("No accounts linked. Add Plaid and/or Bridge credentials via 'ray setup', then run 'ray link'.\n"));
       return;
     }
     console.log(chalk.yellow("No accounts linked yet. Let's connect one first.\n"));

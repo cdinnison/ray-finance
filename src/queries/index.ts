@@ -1,5 +1,6 @@
 import type BetterSqlite3 from "libsql";
 type Database = BetterSqlite3.Database;
+import { formatCurrencyAmount } from "../currency.js";
 
 /** Categories excluded from income/inflow calculations (negative amounts that aren't real income). */
 export const INCOME_EXCLUDED_CATEGORIES = [
@@ -576,7 +577,7 @@ export function getNetWorthTrend(db: Database, limit = 30): { date: string; net_
 }
 
 export function formatMoney(n: number): string {
-  return "$" + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return formatCurrencyAmount(n, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 export function categoryLabel(cat: string): string {

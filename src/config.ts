@@ -10,9 +10,14 @@ export interface RayConfig {
   providerType: "anthropic" | "openai-compatible";
   openaiCompatibleKey: string;
   openaiCompatibleBaseURL: string;
+  displayLocale: string;
+  displayCurrency: string;
   plaidClientId: string;
   plaidSecret: string;
   plaidEnv: string;
+  bridgeClientId: string;
+  bridgeClientSecret: string;
+  bridgeDefaultExternalUserId: string;
   dbPath: string;
   dbEncryptionKey: string;
   plaidTokenSecret: string;
@@ -27,6 +32,18 @@ export const RAY_PROXY_BASE = "https://api.rayfinance.app/v1";
 
 export function useManaged(): boolean {
   return !!config.rayApiKey;
+}
+
+export function hasPlaidByokConfig(): boolean {
+  return !useManaged() && !!config.plaidClientId && !!config.plaidSecret;
+}
+
+export function hasBridgeByokConfig(): boolean {
+  return !useManaged() && !!config.bridgeClientId && !!config.bridgeClientSecret;
+}
+
+export function canLinkAnyProvider(): boolean {
+  return useManaged() || hasPlaidByokConfig() || hasBridgeByokConfig();
 }
 
 const RAY_DIR = resolve(homedir(), ".ray");
@@ -54,9 +71,21 @@ function buildConfig(): RayConfig {
     providerType: file.providerType || (process.env.RAY_PROVIDER as any) || "anthropic",
     openaiCompatibleKey: file.openaiCompatibleKey || process.env.OPENAI_COMPATIBLE_KEY || "",
     openaiCompatibleBaseURL: file.openaiCompatibleBaseURL || process.env.OPENAI_COMPATIBLE_BASE_URL || "",
+    displayLocale:
+      file.displayLocale ||
+      process.env.RAY_DISPLAY_LOCALE ||
+      Intl.DateTimeFormat().resolvedOptions().locale ||
+      "en-US",
+    displayCurrency:
+      file.displayCurrency ||
+      process.env.RAY_DISPLAY_CURRENCY ||
+      "",
     plaidClientId: file.plaidClientId || process.env.PLAID_CLIENT_ID || "",
     plaidSecret: file.plaidSecret || process.env.PLAID_SECRET || "",
     plaidEnv: file.plaidEnv || process.env.PLAID_ENV || "production",
+    bridgeClientId: file.bridgeClientId || process.env.BRIDGE_CLIENT_ID || "",
+    bridgeClientSecret: file.bridgeClientSecret || process.env.BRIDGE_CLIENT_SECRET || "",
+    bridgeDefaultExternalUserId: file.bridgeDefaultExternalUserId || process.env.BRIDGE_DEFAULT_EXTERNAL_USER_ID || "",
     dbPath: file.dbPath || process.env.DB_PATH || resolve(RAY_DIR, "data", "finance.db"),
     dbEncryptionKey: file.dbEncryptionKey || process.env.DB_ENCRYPTION_KEY || "",
     plaidTokenSecret: file.plaidTokenSecret || process.env.PLAID_TOKEN_SECRET || "",

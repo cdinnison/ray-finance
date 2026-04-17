@@ -1,5 +1,6 @@
 import type BetterSqlite3 from "libsql";
 type Database = BetterSqlite3.Database;
+import { formatCurrencyAmount } from "../currency.js";
 
 export interface Alert {
   type: string;
@@ -25,7 +26,7 @@ export function generateAlerts(db: Database): Alert[] {
     alerts.push({
       type: "large_transaction",
       severity: "warning",
-      message: `Large charge: $${tx.amount} at ${tx.merchant_name || tx.name} (${tx.account_name})`,
+      message: `Large charge: ${formatCurrencyAmount(tx.amount, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} at ${tx.merchant_name || tx.name} (${tx.account_name})`,
       data: tx,
     });
   }
@@ -42,7 +43,7 @@ export function generateAlerts(db: Database): Alert[] {
     alerts.push({
       type: "low_balance",
       severity: acct.current_balance < 500 ? "critical" : "warning",
-      message: `Low balance: ${acct.name} has $${acct.current_balance.toFixed(2)}`,
+      message: `Low balance: ${acct.name} has ${formatCurrencyAmount(acct.current_balance, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
       data: acct,
     });
   }
@@ -70,14 +71,14 @@ export function generateAlerts(db: Database): Alert[] {
       alerts.push({
         type: "budget_overrun",
         severity: "warning",
-        message: `Over budget: ${b.category} — spent $${spent.total.toFixed(2)} of $${b.monthly_limit} limit`,
+        message: `Over budget: ${b.category} — spent ${formatCurrencyAmount(spent.total, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of ${formatCurrencyAmount(b.monthly_limit, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} limit`,
         data: { category: b.category, spent: spent.total, limit: b.monthly_limit },
       });
     } else if (spent.total > b.monthly_limit * 0.9) {
       alerts.push({
         type: "budget_warning",
         severity: "info",
-        message: `Nearing budget: ${b.category} — $${spent.total.toFixed(2)} of $${b.monthly_limit} (${Math.round((spent.total / b.monthly_limit) * 100)}%)`,
+        message: `Nearing budget: ${b.category} — ${formatCurrencyAmount(spent.total, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of ${formatCurrencyAmount(b.monthly_limit, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${Math.round((spent.total / b.monthly_limit) * 100)}%)`,
         data: { category: b.category, spent: spent.total, limit: b.monthly_limit },
       });
     }
@@ -101,7 +102,7 @@ export function generateAlerts(db: Database): Alert[] {
       alerts.push({
         type: "price_change",
         severity: "info",
-        message: `Price change: ${name} went from $${Math.abs(r.avg_amount).toFixed(2)} to $${Math.abs(r.last_amount).toFixed(2)} (${r.frequency.toLowerCase()})`,
+        message: `Price change: ${name} went from ${formatCurrencyAmount(Math.abs(r.avg_amount), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} to ${formatCurrencyAmount(Math.abs(r.last_amount), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${r.frequency.toLowerCase()})`,
         data: { merchant: name, previous: r.avg_amount, current: r.last_amount, frequency: r.frequency },
       });
     }

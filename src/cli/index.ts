@@ -10,7 +10,7 @@ if (isDemoMode) {
 
 import { Command } from "commander";
 import { createRequire } from "module";
-import { config, isConfigured, useManaged, RAY_PROXY_BASE } from "../config.js";
+import { canLinkAnyProvider, config, isConfigured, useManaged, RAY_PROXY_BASE } from "../config.js";
 import { helpScreen } from "./format.js";
 
 // Override config for demo mode (demo DB is unencrypted)
@@ -59,11 +59,11 @@ program
 
 program
   .command("link")
-  .description("Link a new financial account via Plaid")
+  .description("Link a new financial account")
   .action(async () => {
     ensureConfigured();
-    if (!useManaged() && (!config.plaidClientId || !config.plaidSecret)) {
-      console.error("Plaid credentials not configured. Run 'ray setup' to add them, or use a Ray API key for easy setup.");
+    if (!canLinkAnyProvider()) {
+      console.error("No banking provider is configured. Run 'ray setup' to add Plaid and/or Bridge credentials, or use a Ray API key for managed Plaid.");
       process.exit(1);
     }
     const { runLink } = await import("./commands.js");
@@ -280,7 +280,7 @@ function ensureConfigured(): void {
 program.configureHelp({
   formatHelp: () => helpScreen([
     { name: "setup", desc: "Configure Ray (API keys, preferences)" },
-    { name: "link", desc: "Link a new financial account via Plaid" },
+    { name: "link", desc: "Link a new financial account" },
     { name: "add", desc: "Add a manual account (home, car, crypto, etc.)" },
     { name: "remove", desc: "Remove a linked bank or manual account" },
     { name: "sync", desc: "Sync transactions from linked banks" },

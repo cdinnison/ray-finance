@@ -9,10 +9,12 @@ import {
 import { getLatestScore, getAchievements, getMonthlySavings } from "../scoring/index.js";
 import { generateAlerts } from "../alerts/index.js";
 import { runDailySync } from "../daily-sync.js";
-import { startLinkServer } from "../server.js";
 import { addManualAccount, getManualAccounts, removeManualAccount, scrapeRedfinEstimate } from "../property.js";
 import { heading, progressBar, formatMoney, formatMoneyColored, padColumns, dim, formatDuration, formatError, renderLogo, institutionName } from "./format.js";
 import { getUpcomingBills } from "../db/bills.js";
+import { getConfiguredProviders } from "../providers/index.js";
+import { parseProviderState } from "../providers/state.js";
+import { describeBridgeProviderState, type BridgeProviderState } from "../providers/bridge/status.js";
 
 export async function runSync(): Promise<void> {
   const ora = (await import("ora")).default;
@@ -31,24 +33,36 @@ export async function runSync(): Promise<void> {
 }
 
 export async function runLink(): Promise<void> {
-  const open = (await import("open")).default;
-  const ora = (await import("ora")).default;
   const readline = await import("readline");
+  const inquirer = (await import("inquirer")).default;
+  const ora = (await import("ora")).default;
+  const db = getDb();
+  const configuredProviders = getConfiguredProviders();
 
-  const { url, waitForComplete, stop } = startLinkServer();
   console.log(`\n${heading("Link Account")}\n`);
-  console.log(`Opening Plaid Link in your browser...\n`);
-  console.log(dim(`  ${url}\n`));
 
-  await open(url);
+  if (configuredProviders.length === 0) {
+    console.log("No banking provider is configured. Run 'ray setup' first.\n");
+    return;
+  }
 
-  const spinner = ora("Waiting for bank connection...").start();
-  await waitForComplete();
-  stop();
-  spinner.succeed("Bank account linked successfully!");
+  let provider = configuredProviders[0];
+  if (configuredProviders.length > 1) {
+    const { providerKey } = await inquirer.prompt([{
+      type: "list",
+      name: "providerKey",
+      message: "Which provider would you like to use?",
+      choices: configuredProviders.map(candidate => ({
+        name: candidate.displayName,
+        value: candidate.key,
+      })),
+    }]);
+    provider = configuredProviders.find(candidate => candidate.key === providerKey) || configuredProviders[0];
+  }
+
+  await provider.link(db);
 
   // Check if a mortgage was linked and we don't already have a property account
-  const db = getDb();
   const hasMortgage = db.prepare(
     `SELECT 1 FROM accounts WHERE type = 'loan' AND subtype = 'mortgage' LIMIT 1`
   ).get();
@@ -86,12 +100,12 @@ export async function runLink(): Promise<void> {
 export async function showAccounts(): Promise<void> {
   const db = getDb();
   const institutions = db.prepare(
-    `SELECT i.name as institution, i.item_id, i.created_at, i.logo, i.primary_color,
+    `SELECT i.name as institution, i.item_id, i.created_at, i.logo, i.primary_color, i.provider, i.provider_state,
             a.name, a.type, a.subtype, a.mask, a.current_balance, a.currency
      FROM institutions i
      LEFT JOIN accounts a ON a.item_id = i.item_id AND a.hidden = 0
      ORDER BY i.created_at, a.type, a.current_balance DESC`
-  ).all() as { institution: string; item_id: string; created_at: string; logo: string | null; primary_color: string | null; name: string | null; type: string | null; subtype: string | null; mask: string | null; current_balance: number | null; currency: string | null }[];
+  ).all() as { institution: string; item_id: string; created_at: string; logo: string | null; primary_color: string | null; provider: string | null; provider_state: string | null; name: string | null; type: string | null; subtype: string | null; mask: string | null; current_balance: number | null; currency: string | null }[];
 
   if (institutions.length === 0) {
     console.log("\nNo accounts linked. Run 'ray link' to connect one.\n");
@@ -121,7 +135,12 @@ export async function showAccounts(): Promise<void> {
       const logo = await renderLogo(first.logo);
       if (logo) logoStr = logo.replace(/\n/g, "") + " ";
     }
-    console.log(`${logoStr}${institutionName(first.institution, first.primary_color)}`);
+    const providerLabel = first.provider === "bridge" ? dim(" [Bridge]") : "";
+    console.log(`${logoStr}${institutionName(first.institution, first.primary_color)}${providerLabel}`);
+    if (first.provider === "bridge") {
+      const bridgeStatus = describeBridgeProviderState(parseProviderState<BridgeProviderState>(first.provider_state));
+      if (bridgeStatus) console.log(dim(`  ${bridgeStatus}`));
+    }
 
     for (const row of rows) {
       if (!row.name) {

@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { formatCurrencyAmount } from "../currency.js";
 
 // ─── Color Palette ─── //
 
@@ -61,8 +62,7 @@ export function formatError(error: any, context?: string): string {
 // ─── Money Formatting ─── //
 
 export function formatMoney(n: number): string {
-  const abs = Math.abs(n);
-  const formatted = "$" + abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const formatted = formatCurrencyAmount(n, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   if (n < 0) return chalk.red("-" + formatted);
   return formatted;
 }
@@ -217,9 +217,17 @@ export function formatResponse(text: string): string {
       // Bold: **text**
       line = line.replace(/\*\*(.+?)\*\*/g, (_, t) => chalk.bold(t));
 
-      // Money amounts: $1,234 or $1,234.56 or -$500
-      line = line.replace(/-?\$[\d,]+(?:\.\d{1,2})?/g, (m) => {
-        return m.startsWith("-") ? chalk.red(m) : chalk.green(m);
+      // Money amounts: $1,234.56 or 1 234,56 € or 1,234 EUR
+      line = line.replace(
+        /[+-]?(?:(?:[$€£])\s?[\d.,\u00A0\u202F]+|[\d.,\u00A0\u202F]+\s?(?:[$€£]|USD|EUR|GBP|CHF|CAD|AUD|JPY))/g,
+        (m) => {
+          return m.startsWith("-") ? chalk.red(m) : chalk.green(m);
+        },
+      );
+
+      // Inline code
+      line = line.replace(/`([^`]+)`/g, (_, t) => {
+        return chalk.cyan(t);
       });
 
       // Percentages

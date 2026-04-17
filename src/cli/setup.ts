@@ -42,7 +42,7 @@ export async function runSetup(): Promise<void> {
     message: "How would you like to set up Ray?",
     choices: [
       { name: "Quick setup — we handle the API keys, your data stays local", value: "managed" },
-      { name: "Bring your own keys — use your own AI and Plaid credentials", value: "selfhosted" },
+      { name: "Bring your own keys — use your own Anthropic, Plaid, and/or Bridge credentials", value: "selfhosted" },
     ],
   }]);
 
@@ -113,6 +113,9 @@ export async function runSetup(): Promise<void> {
       plaidClientId: "",
       plaidSecret: "",
       plaidEnv: "production",
+      bridgeClientId: "",
+      bridgeClientSecret: "",
+      bridgeDefaultExternalUserId: "",
       dbEncryptionKey: config.dbEncryptionKey || generateKey(),
       plaidTokenSecret: config.plaidTokenSecret || generateKey(),
     });
@@ -335,6 +338,20 @@ export async function runSetup(): Promise<void> {
       {
         theme,
         type: "input",
+        name: "bridgeClientId",
+        message: "Bridge client ID (enter to skip):",
+        default: config.bridgeClientId || undefined,
+      },
+      {
+        theme,
+        type: "password",
+        name: "bridgeClientSecret",
+        message: "Bridge client secret (enter to skip):",
+        default: config.bridgeClientSecret || undefined,
+      },
+      {
+        theme,
+        type: "password",
         name: "dbEncryptionKey",
         message: config.dbEncryptionKey ? "Database encryption key (enter to keep current):" : "Database encryption key (enter to skip):",
         transformer: maskKey,
@@ -354,11 +371,17 @@ export async function runSetup(): Promise<void> {
       plaidClientId: plaidAnswers.plaidClientId || config.plaidClientId || "",
       plaidSecret: plaidAnswers.plaidSecret || config.plaidSecret || "",
       plaidEnv: "production",
+      bridgeClientId: plaidAnswers.bridgeClientId || config.bridgeClientId || "",
+      bridgeClientSecret: plaidAnswers.bridgeClientSecret || config.bridgeClientSecret || "",
+      bridgeDefaultExternalUserId: config.bridgeDefaultExternalUserId || "",
       dbEncryptionKey: plaidAnswers.dbEncryptionKey || config.dbEncryptionKey || generateKey(),
       plaidTokenSecret: config.plaidTokenSecret || generateKey(),
     });
 
-    canLink = !!(plaidAnswers.plaidClientId && plaidAnswers.plaidSecret);
+    canLink = !!(
+      (plaidAnswers.plaidClientId && plaidAnswers.plaidSecret) ||
+      (plaidAnswers.bridgeClientId && plaidAnswers.bridgeClientSecret)
+    );
   }
 
   // Ensure data directory exists
