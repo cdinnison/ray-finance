@@ -56,5 +56,4 @@ export async function startChat(): Promise<void> {
 
   const { runChatApp } = await import("./ink/mount.js");
   await runChatApp({ db, onboardingPrompt });
-  console.log(chalk.dim("\nGoodbye!"));
 }
