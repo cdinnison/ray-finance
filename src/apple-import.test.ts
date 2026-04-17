@@ -215,11 +215,10 @@ describe("runAppleImport", () => {
     expect(poke.category).toBe("FOOD_AND_DRINK");
     expect(poke.subcategory).toBe("FOOD_AND_DRINK_RESTAURANT");
 
-    // Card payments map to TRANSFER_IN (not LOAN_PAYMENTS) so they don't pass
-    // through Ray's `amount < 0 AND category NOT IN ('TRANSFER_IN')` income
-    // filters and inflate cash-flow numbers.
+    // Card payments map to LOAN_PAYMENTS, matching Plaid's shape for CC
+    // payments. INCOME_EXCLUDED_CATEGORIES keeps them out of income/cash-flow.
     const payment: any = db.prepare(`SELECT category FROM transactions WHERE merchant_name = 'Ach Deposit'`).get();
-    expect(payment.category).toBe("TRANSFER_IN");
+    expect(payment.category).toBe("LOAN_PAYMENTS");
 
     const refund: any = db.prepare(`SELECT category FROM transactions WHERE merchant_name = 'Sq Vacancy Coffee (return)'`).get();
     expect(refund.category).toBe("TRANSFER_IN");

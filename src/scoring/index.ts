@@ -236,18 +236,10 @@ export function checkAchievements(db: Database): Achievement[] {
       check: () => {
         const now = new Date();
         const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-        // Exclude only refunds, not all TRANSFER_IN. The original filter
-        // blocked refunds (Plaid tags refunds as TRANSFER_IN + label='refund'),
-        // but `ray import-apple` also maps Apple Card Payment rows to
-        // TRANSFER_IN (with label='transfer') — excluding the whole category
-        // dropped Apple payments from Debt Crusher. Plaid credit payments are
-        // already counted because Plaid uses LOAN_PAYMENTS for them, not
-        // TRANSFER_IN, so this change only affects Apple-sourced rows.
         const row = db.prepare(
           `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
            WHERE account_id IN (SELECT account_id FROM accounts WHERE type = 'credit')
-           AND amount < 0 AND date >= ?
-           AND NOT (category = 'TRANSFER_IN' AND label = 'refund')`
+           AND amount < 0 AND date >= ? AND category != 'TRANSFER_IN'`
         ).get(monthStart) as any;
         return row?.total >= 1000;
       },

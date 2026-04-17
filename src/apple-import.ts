@@ -71,24 +71,17 @@ const CATEGORY_MAP: Record<string, CategoryMapping> = {
   Medical: { category: "MEDICAL", subcategory: null },
   Utilities: { category: "RENT_AND_UTILITIES", subcategory: null },
   "Govt-services-parking": { category: "GOVERNMENT_AND_NON_PROFIT", subcategory: null },
-  // Payment (negative): card payment from your bank. Mapped to TRANSFER_IN
-  // because Ray's income queries (getIncome, getCashFlow*, compareSpending)
-  // exclude only TRANSFER_IN from `amount < 0`-as-income — LOAN_PAYMENTS would
-  // be counted as income and inflate cash-flow numbers. The corresponding
-  // outflow on the bank account will appear as TRANSFER_OUT via Plaid.
-  Payment: { category: "TRANSFER_IN", subcategory: null },
+  // Payment (negative): card payment from your bank. Matches Plaid's shape
+  // for CC payments; INCOME_EXCLUDED_CATEGORIES keeps it out of income totals.
+  Payment: { category: "LOAN_PAYMENTS", subcategory: null },
   // Installment (positive): Apple Card monthly financing charge (e.g., iPhone).
-  // Amortization of a prior purchase, not new spending — LOAN_PAYMENTS keeps it
-  // out of total-spend aggregation.
   Installment: { category: "LOAN_PAYMENTS", subcategory: null },
-  // Credit (negative): a refund. Without mapping, queries/index.ts would count
-  // it as income. TRANSFER_IN excludes it from income totals.
+  // Credit (negative): a refund. TRANSFER_IN keeps it out of income totals.
   Credit: { category: "TRANSFER_IN", subcategory: null },
   Other: { category: null, subcategory: null },
 };
 
 const TYPE_LABELS: Record<string, string | null> = {
-  Payment: "transfer",
   Credit: "refund",
   Installment: "installment",
 };

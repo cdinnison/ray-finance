@@ -6,9 +6,11 @@
 - `ray import-apple <path>` — import Apple Card transactions from Apple's CSV export. Apple Card isn't supported by Plaid; this creates a manual account, maps Apple's categories to Ray's taxonomy so transactions participate in spending/scoring/budgets, and is safe to re-run monthly via hash-based deduplication (or `--replace-range` for authoritative overwrites of a date window).
 
 ### Changed
+- `ray import-apple` now stores Apple `Payment` rows as `LOAN_PAYMENTS`, matching Plaid's shape for credit-card payments (was `TRANSFER_IN` as a workaround for a pre-existing income-query bug). The root bug was fixed upstream in #12 — `INCOME_EXCLUDED_CATEGORIES` now covers `LOAN_PAYMENTS` everywhere, so Apple and Plaid both flow through the same code path with no special-casing. Users who already imported Apple CSVs on the prior branch should re-run `ray import-apple --replace-range <start> <end>` to rewrite those rows. Per-category displays will now show Apple card payments under "Loan Payments" instead of "Transfer In" — more accurate, not a regression.
 - `ray remove` now labels institutions by source in its listing — `(1 account, manual)` vs `(2 accounts, linked)` — instead of tagging every non-`manual-assets` institution as "linked". Matters when a manual-imported account (e.g. Apple Card) and a Plaid-linked account share a name.
 - `ray import-apple` now applies your configured auto-recategorization rules immediately after a successful import, so Apple Card rows pick up the same categorization you'd get after the next `ray sync`. Dry-run (`--dry-run`) still previews only.
 - Internal: extracted the auto-recategorization pass from `runDailySync` into `applyRecategorizationRules(db)` (new module `src/recategorization.ts`); shared by daily sync and Apple Card import.
+- Internal: Debt Crusher achievement reverted to its pre-Apple query (`category != 'TRANSFER_IN'` on credit accounts), now that Apple payments land in `LOAN_PAYMENTS` alongside Plaid. Removes the label-based compensator that was added when Apple payments were remapped to `TRANSFER_IN`.
 
 ### Fixed
 - `ray import-apple` no longer hides manually-added debts (`ray add … liability`) from `ray status`, debt views, and AI debt advice. `getDebts()` previously returned only `liabilities`-table rows when that table was non-empty; importing Apple Card populated `liabilities` and silently dropped manual car loans / mortgages that live only in `accounts`. Now unions both sources, keyed by `account_id`.
@@ -24,6 +26,9 @@
 - `ray import` (backup restore) no longer silently drops recategorization rules that differ only by `target_subcategory`. The duplicate check now includes the subcategory with NULL-safe comparison.
 - `getDebts()` no longer drops Plaid-synced mortgages and student loans from debt views. These liability types store `current_balance = NULL` in the `liabilities` table (actual balance is in `accounts`); the recent getDebts union fix filtered `WHERE l.current_balance > 0`, excluding them. Now uses `COALESCE(l.current_balance, a.current_balance)`.
 - `categoryLabel()` no longer crashes on null/undefined categories — previously threw `Cannot read properties of null (reading 'split')` when the AI chat tool encountered a transaction with a null category.
+
+### Known limitations
+- Apple Card statements do not yet appear in `ray bills`. The bills view reads `liabilities.next_payment_due` + `minimum_payment`, which `ray import-apple` doesn't populate (Apple's CSV doesn't include statement schedule data). Follow-up: add optional `--due-day` / `--min-payment` flags to the import command.
 
 ## 0.4.0
 
