@@ -1,6 +1,16 @@
 import type BetterSqlite3 from "libsql";
 type Database = BetterSqlite3.Database;
 
+/** Categories excluded from income/inflow calculations (negative amounts that aren't real income). */
+export const INCOME_EXCLUDED_CATEGORIES = [
+  'TRANSFER_IN',
+  'LOAN_PAYMENTS',
+  'LOAN_PAYMENTS_CAR_PAYMENT',
+  'LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT',
+] as const;
+
+const INCOME_EXCLUDED_SQL = INCOME_EXCLUDED_CATEGORIES.map(c => `'${c}'`).join(', ');
+
 export interface BudgetStatus {
   category: string;
   budget: number;
@@ -166,7 +176,7 @@ export function getCashFlowThisMonth(db: Database): { income: number; expenses: 
     .prepare(
       `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
        WHERE amount < 0 AND date BETWEEN ? AND ? AND pending = 0
-       AND category NOT IN ('TRANSFER_IN')`
+       AND category NOT IN (${INCOME_EXCLUDED_SQL})`
     )
     .get(monthStart, today) as { total: number };
 
@@ -271,7 +281,7 @@ export function getIncome(db: Database, startDate: string, endDate: string): { s
     `SELECT COALESCE(merchant_name, name) as source, SUM(ABS(amount)) as total, COUNT(*) as count
      FROM transactions
      WHERE amount < 0 AND date BETWEEN ? AND ? AND pending = 0
-     AND category NOT IN ('TRANSFER_IN')
+     AND category NOT IN (${INCOME_EXCLUDED_SQL})
      GROUP BY source ORDER BY total DESC`
   ).all(startDate, endDate) as any[];
 }
@@ -296,7 +306,7 @@ export function getCashFlow(db: Database, startDate: string, endDate: string): {
   const income = db.prepare(
     `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
      WHERE amount < 0 AND date BETWEEN ? AND ? AND pending = 0
-     AND category NOT IN ('TRANSFER_IN')`
+     AND category NOT IN (${INCOME_EXCLUDED_SQL})`
   ).get(startDate, endDate) as { total: number };
 
   const expenses = db.prepare(
@@ -311,7 +321,7 @@ export function getCashFlow(db: Database, startDate: string, endDate: string): {
   // Monthly breakdown
   const rows = db.prepare(
     `SELECT strftime('%Y-%m', date) as month,
-       SUM(CASE WHEN amount < 0 AND category NOT IN ('TRANSFER_IN') THEN ABS(amount) ELSE 0 END) as income,
+       SUM(CASE WHEN amount < 0 AND category NOT IN (${INCOME_EXCLUDED_SQL}) THEN ABS(amount) ELSE 0 END) as income,
        SUM(CASE WHEN amount > 0 AND category NOT IN ('TRANSFER_OUT') THEN amount ELSE 0 END) as expenses
      FROM transactions
      WHERE date BETWEEN ? AND ? AND pending = 0
@@ -357,7 +367,8 @@ export function forecastBalance(db: Database, accountId?: string, months = 6): {
 
   const inflow = db.prepare(
     `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-     WHERE amount < 0 AND date BETWEEN ? AND ? AND pending = 0${flowCondition}`
+     WHERE amount < 0 AND date BETWEEN ? AND ? AND pending = 0
+     AND category NOT IN (${INCOME_EXCLUDED_SQL})${flowCondition}`
   ).get(...flowParams) as { total: number };
 
   const outflow = db.prepare(

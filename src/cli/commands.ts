@@ -23,6 +23,7 @@ import {
 } from "../apple-import.js";
 import { existsSync, readFileSync } from "fs";
 import { heading, progressBar, formatMoney, formatMoneyColored, padColumns, dim, formatDuration, formatError, renderLogo, institutionName } from "./format.js";
+import { getUpcomingBills } from "../db/bills.js";
 
 export function getImportAppleBackfillWindow(
   result: { dateRange: { first: string; last: string } | null; replaceWindow: { first: string; last: string } | null },
@@ -528,29 +529,7 @@ export function showAlerts(): void {
 
 export function showBills(days = 7): void {
   const db = getDb();
-  const now = new Date();
-  const todayDay = now.getDate();
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-
-  const endDay = todayDay + days;
-
-  type Bill = { name: string; amount: number; day_of_month: number };
-  let bills: Bill[] = [];
-
-  if (endDay <= daysInMonth) {
-    bills = db.prepare(
-      `SELECT name, amount, day_of_month FROM recurring_bills WHERE day_of_month BETWEEN ? AND ? ORDER BY day_of_month`
-    ).all(todayDay + 1, endDay) as Bill[];
-  } else {
-    // Wraparound into next month
-    const thisMonth = db.prepare(
-      `SELECT name, amount, day_of_month FROM recurring_bills WHERE day_of_month BETWEEN ? AND ? ORDER BY day_of_month`
-    ).all(todayDay + 1, daysInMonth) as Bill[];
-    const nextMonth = db.prepare(
-      `SELECT name, amount, day_of_month FROM recurring_bills WHERE day_of_month BETWEEN 1 AND ? ORDER BY day_of_month`
-    ).all(endDay - daysInMonth) as Bill[];
-    bills = [...thisMonth, ...nextMonth];
-  }
+  const bills = getUpcomingBills(db, days);
 
   if (bills.length === 0) {
     console.log(`\nNo upcoming bills in the next ${days} days.`);
@@ -563,16 +542,15 @@ export function showBills(days = 7): void {
   let total = 0;
 
   for (const b of bills) {
-    // Calculate the actual date for this bill
-    let billDate: Date;
-    if (b.day_of_month > todayDay) {
-      billDate = new Date(now.getFullYear(), now.getMonth(), b.day_of_month);
-    } else {
-      billDate = new Date(now.getFullYear(), now.getMonth() + 1, b.day_of_month);
-    }
-    const dateStr = billDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-
-    console.log(`  ${dim(dateStr.padEnd(8))}${b.name.padEnd(maxName + 2)}${rawFormatMoney(b.amount).padStart(10)}`);
+    const dateStr = b.date.toLocaleDateString("en-US", {
+      month: "short", day: "numeric", timeZone: "UTC",
+    });
+    const amountStr = rawFormatMoney(b.amount);
+    const noteStr = b.note ? dim(` ${b.note}`) : "";
+    const tag = dim(`[${b.source}]`);
+    console.log(
+      `  ${dim(dateStr.padEnd(8))}${b.name.padEnd(maxName + 2)}${amountStr.padStart(10)}${noteStr}  ${tag}`
+    );
     total += b.amount;
   }
 
@@ -616,7 +594,7 @@ export function showRecap(period = "last_month"): void {
   const income = db.prepare(
     `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
      WHERE amount < 0 AND date BETWEEN ? AND ? AND pending = 0
-     AND category NOT IN ('TRANSFER_IN')`
+     AND category NOT IN ('TRANSFER_IN', 'LOAN_PAYMENTS', 'LOAN_PAYMENTS_CAR_PAYMENT', 'LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT')`
   ).get(start, end) as { total: number };
 
   const totalSpent = spending.total || 0;

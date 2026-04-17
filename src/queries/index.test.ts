@@ -19,6 +19,7 @@ import {
   getDebts,
   getCashFlow,
   getIncome,
+  INCOME_EXCLUDED_CATEGORIES,
 } from "./index.js";
 
 type DB = InstanceType<typeof Database>;
@@ -433,5 +434,71 @@ describe("getIncome", () => {
     expect(income.length).toBe(2);
     expect(income[0].total).toBe(3000); // sorted desc
     expect(income[0].source).toBe("Acme Corp");
+  });
+
+  it("excludes negative LOAN_PAYMENTS (CC payment)", () => {
+    seedAccount(db, { id: "a", type: "depository", balance: 5000 });
+    seedTransaction(db, { id: "t1", accountId: "a", amount: -3000, date: "2025-01-10", name: "Payroll", merchant: "Acme Corp", category: "INCOME" });
+    seedTransaction(db, { id: "t2", accountId: "a", amount: -1500, date: "2025-01-12", name: "Chase CC Payment", category: "LOAN_PAYMENTS" });
+
+    const income = getIncome(db, "2025-01-01", "2025-01-31");
+    expect(income.length).toBe(1);
+    expect(income[0].total).toBe(3000);
+  });
+
+  it("excludes negative LOAN_PAYMENTS_CAR_PAYMENT", () => {
+    seedAccount(db, { id: "a", type: "depository", balance: 5000 });
+    seedTransaction(db, { id: "t1", accountId: "a", amount: -3000, date: "2025-01-10", name: "Payroll", merchant: "Acme Corp", category: "INCOME" });
+    seedTransaction(db, { id: "t2", accountId: "a", amount: -400, date: "2025-01-15", name: "Car Payment", category: "LOAN_PAYMENTS_CAR_PAYMENT" });
+
+    const income = getIncome(db, "2025-01-01", "2025-01-31");
+    expect(income.length).toBe(1);
+    expect(income[0].total).toBe(3000);
+  });
+});
+
+// ─── LOAN_PAYMENTS income exclusion regressions ───
+
+describe("getCashFlow excludes LOAN_PAYMENTS from income", () => {
+  it("net and savingsRate exclude CC payment", () => {
+    seedAccount(db, { id: "a", type: "depository", balance: 5000 });
+    seedTransaction(db, { id: "t1", accountId: "a", amount: -5000, date: "2025-01-15", name: "Salary", category: "INCOME" });
+    seedTransaction(db, { id: "t2", accountId: "a", amount: -1500, date: "2025-01-16", name: "CC Payment", category: "LOAN_PAYMENTS" });
+    seedTransaction(db, { id: "t3", accountId: "a", amount: 2000, date: "2025-01-20", name: "Rent", category: "RENT_AND_UTILITIES" });
+
+    const cf = getCashFlow(db, "2025-01-01", "2025-01-31");
+    expect(cf.income).toBe(5000); // not 6500
+    expect(cf.expenses).toBe(2000);
+    expect(cf.net).toBe(3000);
+    expect(cf.savingsRate).toBe(60);
+  });
+});
+
+describe("getCashFlowThisMonth excludes LOAN_PAYMENTS from income", () => {
+  it("does not count CC payment as income", () => {
+    seedAccount(db, { id: "a", type: "depository", balance: 5000 });
+    seedTransaction(db, { id: "t1", accountId: "a", amount: -3000, date: today(), name: "Paycheck", category: "INCOME" });
+    seedTransaction(db, { id: "t2", accountId: "a", amount: -1200, date: today(), name: "CC Payment", category: "LOAN_PAYMENTS" });
+
+    const cf = getCashFlowThisMonth(db);
+    expect(cf.income).toBe(3000); // not 4200
+  });
+});
+
+describe("forecastBalance excludes LOAN_PAYMENTS from inflow", () => {
+  it("avgMonthlyInflow excludes LOAN_PAYMENTS and TRANSFER_IN", () => {
+    seedAccount(db, { id: "a", type: "depository", balance: 10000 });
+
+    for (let m = 1; m <= 3; m++) {
+      const date = daysAgo(m * 30);
+      seedTransaction(db, { id: `inc-${m}`, accountId: "a", amount: -5000, date, name: "Paycheck", category: "INCOME" });
+      seedTransaction(db, { id: `lp-${m}`, accountId: "a", amount: -1000, date, name: "CC Payment", category: "LOAN_PAYMENTS" });
+      seedTransaction(db, { id: `xfr-${m}`, accountId: "a", amount: -500, date, name: "Transfer", category: "TRANSFER_IN" });
+      seedTransaction(db, { id: `exp-${m}`, accountId: "a", amount: 3000, date, name: "Rent" });
+    }
+
+    const forecast = forecastBalance(db);
+    // avgMonthlyInflow should be ~5000, not 6500 (with LOAN_PAYMENTS) or 7000 (with both)
+    expect(forecast.avgMonthlyInflow).toBeCloseTo(5000, -2);
   });
 });

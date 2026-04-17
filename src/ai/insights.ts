@@ -5,6 +5,7 @@ import {
   getGoals, compareSpending, formatMoney, categoryLabel,
 } from "../queries/index.js";
 import { getLatestScore } from "../scoring/index.js";
+import { getUpcomingBills } from "../db/bills.js";
 
 const MAX_CHARS = 6000;
 
@@ -177,45 +178,14 @@ function buildGoals(db: Database.Database): string | null {
 function buildUpcoming(db: Database.Database): string | null {
   const parts: string[] = [];
 
-  // Recurring bills due in next 7 days
-  const now = new Date();
-  const todayDay = now.getDate();
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const endDay = todayDay + 7;
-
-  let bills: { name: string; amount: number; day_of_month: number }[] = [];
-  if (endDay <= daysInMonth) {
-    bills = db.prepare(
-      `SELECT name, amount, day_of_month FROM recurring_bills WHERE day_of_month BETWEEN ? AND ?`
-    ).all(todayDay + 1, endDay) as any[];
-  } else {
-    // Wraparound: rest of this month + start of next
-    const thisMonthBills = db.prepare(
-      `SELECT name, amount, day_of_month FROM recurring_bills WHERE day_of_month BETWEEN ? AND ?`
-    ).all(todayDay + 1, daysInMonth) as any[];
-    const nextMonthBills = db.prepare(
-      `SELECT name, amount, day_of_month FROM recurring_bills WHERE day_of_month BETWEEN 1 AND ?`
-    ).all(endDay - daysInMonth) as any[];
-    bills = [...thisMonthBills, ...nextMonthBills];
-  }
-
-  // Also handle bills on day 31 in shorter months
-  if (daysInMonth < 31) {
-    const endOfMonthBills = db.prepare(
-      `SELECT name, amount, day_of_month FROM recurring_bills WHERE day_of_month > ? AND day_of_month NOT IN (SELECT day_of_month FROM recurring_bills WHERE day_of_month BETWEEN ? AND ?)`
-    ).all(daysInMonth, todayDay + 1, Math.min(endDay, daysInMonth)) as any[];
-    // These bills fall on the last day of the month
-    if (daysInMonth >= todayDay + 1 && daysInMonth <= endDay) {
-      bills.push(...endOfMonthBills);
-    }
-  }
-
+  const bills = getUpcomingBills(db, 7);
+  const today = startOfUtcDay(new Date());
   if (bills.length > 0) {
     const billStrs = bills.slice(0, 5).map(b => {
-      const daysUntil = b.day_of_month > todayDay
-        ? b.day_of_month - todayDay
-        : daysInMonth - todayDay + b.day_of_month;
-      return `${b.name} (${formatMoney(b.amount)}) due in ${daysUntil} days`;
+      const daysUntil = Math.round((b.date.getTime() - today.getTime()) / 86400000);
+      const amt = formatMoney(b.amount);
+      const extra = b.note ? ` ${b.note}` : "";
+      return `${b.name} (${amt}${extra}) due in ${daysUntil} days`;
     });
     parts.push(`UPCOMING: ${billStrs.join(", ")}`);
   }
@@ -413,20 +383,12 @@ export function cliBriefing(db: Database.Database): string | null {
   }
 
   // Upcoming bills
-  const todayDay = now.getDate();
-  const endDay = todayDay + 7;
-  let bills: { name: string; amount: number; day_of_month: number }[] = [];
-  if (endDay <= daysInMonth) {
-    bills = db.prepare(`SELECT name, amount, day_of_month FROM recurring_bills WHERE day_of_month BETWEEN ? AND ?`).all(todayDay + 1, endDay) as any[];
-  } else {
-    const a = db.prepare(`SELECT name, amount, day_of_month FROM recurring_bills WHERE day_of_month BETWEEN ? AND ?`).all(todayDay + 1, daysInMonth) as any[];
-    const b = db.prepare(`SELECT name, amount, day_of_month FROM recurring_bills WHERE day_of_month BETWEEN 1 AND ?`).all(endDay - daysInMonth) as any[];
-    bills = [...a, ...b];
-  }
+  const bills = getUpcomingBills(db, 7);
   if (bills.length > 0) {
     lines.push("");
+    const today = startOfUtcDay(new Date());
     const billStrs = bills.slice(0, 3).map(b => {
-      const daysUntil = b.day_of_month > todayDay ? b.day_of_month - todayDay : daysInMonth - todayDay + b.day_of_month;
+      const daysUntil = Math.round((b.date.getTime() - today.getTime()) / 86400000);
       return chalk.dim(`${b.name} ${fmtMoney(b.amount)}`) + chalk.dim(` in ${daysUntil}d`);
     });
     lines.push(`  ${chalk.dim("upcoming")}  ${billStrs.join(chalk.dim("  ·  "))}`);
@@ -450,6 +412,10 @@ export function cliBriefing(db: Database.Database): string | null {
 
 function fmtMoney(n: number): string {
   return "$" + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+
+function startOfUtcDay(d: Date): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
 function miniBar(pct: number): string {

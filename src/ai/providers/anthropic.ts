@@ -28,7 +28,9 @@ export function createAnthropicProvider(opts: {
         apiParams.thinking = params.thinking;
       }
 
-      const response = await client.messages.create(apiParams);
+      const response = await client.messages.create(apiParams, {
+        signal: params.signal,
+      });
 
       // Filter thinking blocks and normalize content
       const content: NormalizedContentBlock[] = [];
