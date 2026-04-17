@@ -8,9 +8,9 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://rayfinance.app"),
-  title: "Ray — AI Financial Advisor, Running Locally",
+  title: "Ray — The Finance App That Tells You What To Do",
   description:
-    "An open-source AI financial advisor that learns your full situation and gives personalized advice from your real bank data — running locally on your machine.",
+    "Other finance apps show you what you spent. Ray tells you what to do. An open-source AI financial advisor that learns your full situation, uses your real bank data, and runs locally on your machine.",
   keywords: [
     "AI financial advisor",
     "personal finance CLI",
@@ -35,9 +35,9 @@ export const metadata: Metadata = {
     canonical: "/",
   },
   openGraph: {
-    title: "Ray — AI Financial Advisor, Running Locally",
+    title: "Ray — The Finance App That Tells You What To Do",
     description:
-      "An open-source AI financial advisor that learns your full situation and gives personalized advice from your real bank data — running locally on your machine.",
+      "Other finance apps show you what you spent. Ray tells you what to do. An open-source AI financial advisor that learns your full situation, uses your real bank data, and runs locally on your machine.",
     url: "https://rayfinance.app",
     siteName: "Ray Finance",
     type: "website",
@@ -52,9 +52,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Ray — AI Financial Advisor, Running Locally",
+    title: "Ray — The Finance App That Tells You What To Do",
     description:
-      "An open-source AI financial advisor that learns your full situation and gives personalized advice from your real bank data — running locally on your machine.",
+      "Other finance apps show you what you spent. Ray tells you what to do. An open-source AI financial advisor that learns your full situation, uses your real bank data, and runs locally on your machine.",
     images: ["/ray-og.jpg"],
   },
   icons: {
@@ -70,7 +70,7 @@ const organizationJsonLd = {
   url: "https://rayfinance.app",
   logo: "https://rayfinance.app/favicon.png",
   description:
-    "Ray is an open-source AI financial advisor that learns your full situation — family, goals, career, strategy — and gives personalized advice from your real bank data. Local-first and open source.",
+    "Ray is the open-source AI financial advisor that tells you what to do with your money, not just what you spent. It learns your full situation — family, goals, career, strategy — and turns your real bank data into the next move. Local-first and open source.",
   foundingDate: "2024",
   founder: {
     "@type": "Person",
