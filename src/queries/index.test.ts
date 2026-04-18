@@ -396,6 +396,26 @@ describe("getDebts", () => {
     expect(result.debts[0].minPayment).toBe(2100);
   });
 
+  it("includes credit cards with liabilities.current_balance=0 but non-zero accounts balance", () => {
+    // Plaid writes last_statement_balance into liabilities.current_balance for
+    // credit cards (plaid/sync.ts:381). After a statement is paid off, that can
+    // be 0 while accounts.current_balance reflects new post-statement charges.
+    // getDebts must fall through to the live accounts balance (treat 0 like NULL).
+    seedAccount(db, { id: "cc-paid-statement", type: "credit", balance: 500, name: "Apple Card" });
+    db.prepare(
+      `INSERT INTO liabilities (account_id, type, interest_rate, current_balance, minimum_payment)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run("cc-paid-statement", "credit", 22.24, 0, 25);
+
+    const result = getDebts(db);
+    expect(result.debts).toHaveLength(1);
+    expect(result.totalDebt).toBe(500);
+    expect(result.debts[0].name).toBe("Apple Card");
+    expect(result.debts[0].balance).toBe(500);
+    expect(result.debts[0].rate).toBe(22.24);
+    expect(result.debts[0].minPayment).toBe(25);
+  });
+
   it("does not duplicate when an account is in both liabilities and accounts", () => {
     // Plaid-synced credit card: lives in both tables.
     seedAccount(db, { id: "chase-cc", type: "credit", balance: 3000, name: "Chase" });

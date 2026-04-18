@@ -485,14 +485,19 @@ export function getDebts(db: Database): {
   // fills in the rest.
   // COALESCE on balance: Plaid writes current_balance=NULL for mortgages and
   // student loans (plaid/sync.ts:410, 439) — actual balance is in accounts.
+  // NULLIF(l.current_balance, 0) treats a stored 0 the same as NULL: for credit
+  // cards Plaid writes last_statement_balance, which can legitimately be 0 after
+  // the statement is paid off even while accounts.current_balance reflects new
+  // post-statement charges. Falling through to accounts.current_balance keeps
+  // those debts visible instead of silently dropping them.
   const liabilities = db.prepare(
     `SELECT a.account_id, a.name,
-       COALESCE(l.current_balance, a.current_balance) as balance,
+       COALESCE(NULLIF(l.current_balance, 0), a.current_balance) as balance,
        l.interest_rate as rate, l.minimum_payment as min_payment,
        l.type, l.next_payment_due as next_due
      FROM liabilities l
      JOIN accounts a ON l.account_id = a.account_id
-     WHERE COALESCE(l.current_balance, a.current_balance) > 0
+     WHERE COALESCE(NULLIF(l.current_balance, 0), a.current_balance) > 0
      ORDER BY l.interest_rate DESC`
   ).all() as any[];
 
