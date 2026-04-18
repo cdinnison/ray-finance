@@ -706,12 +706,21 @@ export async function runImportApple(
     replaceLast: string;
     warnings: string[];
   };
+  let parsed: ReturnType<typeof parseAppleCsv>;
   try {
-    const { rows, warnings, replaceWindow } = parseAppleCsv(readFileSync(csvPath, "utf-8"));
+    parsed = parseAppleCsv(readFileSync(csvPath, "utf-8"));
+    const { rows, warnings, replaceWindow } = parsed;
     if (rows.length === 0) {
-      console.error(chalk.red("  CSV contained no valid rows."));
+      // parseAppleCsv throws on a bad header, so zero rows + zero warnings
+      // means the file had a valid header and no data rows (header-only
+      // export). Point the user at the actual cause rather than leaving
+      // them to wonder whether their CSV format is wrong.
       if (warnings.length > 0) {
+        console.error(chalk.red("  CSV contained no valid rows — every row was rejected:"));
         for (const w of warnings) console.error(dim("    " + w));
+      } else {
+        console.error(chalk.red("  CSV had a valid header but no data rows."));
+        console.error(dim("    Re-export from Apple Wallet with a date range that has activity."));
       }
       process.exit(1);
     }
@@ -822,6 +831,7 @@ export async function runImportApple(
       limit,
       replaceRange: opts.replaceRange,
       dryRun: opts.dryRun,
+      preParsed: parsed,
     });
     // stop() here rather than succeed() — post-import output (warnings,
     // summary, recat, scoring, achievements) prints below; succeed() fires

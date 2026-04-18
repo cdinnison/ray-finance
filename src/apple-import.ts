@@ -25,6 +25,12 @@ export interface AppleImportOptions {
   limit?: number;
   replaceRange?: boolean;
   dryRun?: boolean;
+  // Parsed CSV payload. When supplied, runAppleImport skips its own
+  // readFileSync + parseAppleCsv and uses this instead — the caller has
+  // already done the work (e.g. runImportApple parses once for the preview
+  // banner, then passes the result through so the authoritative insert
+  // path and the preview can't disagree if the file is edited mid-prompt).
+  preParsed?: ReturnType<typeof parseAppleCsv>;
 }
 
 export interface AppleImportResult {
@@ -312,8 +318,8 @@ export function sumAppleRowsInRange(db: Database, first: string, last: string): 
 
 /** Run the import end-to-end. Returns a result struct for the CLI layer to format. */
 export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImportResult {
-  const text = readFileSync(opts.csvPath, "utf-8");
-  const { rows, warnings, replaceWindow } = parseAppleCsv(text);
+  const { rows, warnings, replaceWindow } =
+    opts.preParsed ?? parseAppleCsv(readFileSync(opts.csvPath, "utf-8"));
 
   if (rows.length === 0) {
     return {
