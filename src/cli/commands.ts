@@ -25,6 +25,39 @@ import { existsSync, readFileSync } from "fs";
 import { heading, progressBar, formatMoney, formatMoneyColored, padColumns, dim, formatDuration, formatError, renderLogo, institutionName } from "./format.js";
 import { getUpcomingBills } from "../db/bills.js";
 
+/**
+ * Strict money parser for CLI flags. Returns `undefined` only when the flag is
+ * truly absent or an empty string — any other non-numeric input is a hard
+ * error so that `--balance=123abc` fails fast instead of silently parsing to
+ * 123 (the old `parseFloat` behavior) or falling through to the interactive
+ * prompt path under scripted/CI use.
+ *
+ * Accepts `$` and `,` as purely cosmetic (e.g. "$1,200.50") and supports an
+ * optional leading `-` so negative amounts survive if a caller ever allows
+ * them. Everything else is rejected.
+ *
+ * When `exitOnError` is true (the default for CLI use) the function prints a
+ * red error naming the flag and exits with code 1; when false it returns
+ * `null` so unit tests can assert rejection without terminating the process.
+ */
+export function parseMoneyStrict(
+  flagName: string,
+  v: string | undefined,
+  exitOnError = true
+): number | undefined | null {
+  if (v === undefined || v === "") return undefined;
+  const cleaned = String(v).replace(/[$,]/g, "").trim();
+  // Require pure numeric (optional leading `-`, optional single decimal point).
+  const numeric = /^-?\d+(\.\d+)?$|^-?\.\d+$/.test(cleaned);
+  const n = numeric ? Number(cleaned) : NaN;
+  if (!numeric || !Number.isFinite(n)) {
+    console.error(chalk.red(`Error: --${flagName} must be a number (got "${v}")`));
+    if (exitOnError) process.exit(1);
+    return null;
+  }
+  return n;
+}
+
 export function getImportAppleBackfillWindow(
   result: { dateRange: { first: string; last: string } | null; replaceWindow: { first: string; last: string } | null },
   opts: { replaceRange?: boolean },
@@ -754,13 +787,17 @@ export async function runImportApple(
   console.log("");
 
   // --- Balance ---
-  const parseMoney = (v: string | undefined): number | undefined => {
+  // Used only for inquirer answers — those are already gated by `validate` so
+  // we can fall back to `undefined` on a bad parse without masking CLI-flag
+  // typos. CLI flags go through `parseMoneyStrict` (which hard-exits on junk
+  // like `--balance 123abc` instead of silently discarding the tail).
+  const parseMoneyLoose = (v: string | undefined): number | undefined => {
     if (v === undefined || v === "") return undefined;
     const n = parseFloat(String(v).replace(/[$,]/g, ""));
     return isNaN(n) ? undefined : n;
   };
 
-  let balance = parseMoney(opts.balance);
+  let balance = parseMoneyStrict("balance", opts.balance) as number | undefined;
   // Dry-run skips prompts but the real import will require a balance on first
   // run — surface that now so the preview isn't misleading.
   if (opts.dryRun && !existed && balance === undefined) {
@@ -768,39 +805,69 @@ export async function runImportApple(
     console.log("");
   }
   if (balance === undefined && !opts.dryRun) {
-    const existingBalance = getAppleAccountBalance(db);
-    const { answer } = await inquirer.prompt([{theme,
-      type: "input",
-      name: "answer",
-      message: existed
-        ? `Current balance on Apple Card ${dim("(what you owe, blank to keep existing)")}`
-        : `Current balance on Apple Card ${dim("(what you owe)")}`,
-      default: existingBalance != null ? String(existingBalance) : undefined,
-      validate: (v: string) => {
-        if (v.trim() === "") return existed ? true : "Required — enter your current balance";
-        const n = parseFloat(v.replace(/[$,]/g, ""));
-        return isNaN(n) ? (existed ? "Enter a number or leave blank" : "Enter a number") : true;
-      },
-    }]);
-    balance = parseMoney(answer);
+    // Non-TTY (scripted / CI / piped) must never block on inquirer. For first
+    // runs the balance is required, so exit with a clear error naming the
+    // flag. For re-imports we can safely leave balance undefined because the
+    // `ON CONFLICT ... COALESCE(excluded.balance, accounts.balance)` in
+    // insertAcc preserves the prior value.
+    if (!process.stdin.isTTY) {
+      if (!existed) {
+        console.error(chalk.red("Error: --balance is required in non-interactive mode."));
+        console.error(chalk.red("  Example: ray import-apple <csv> --balance 1234.56"));
+        process.exit(1);
+      } else {
+        console.log(
+          chalk.yellow(
+            "  Non-interactive mode: --balance not provided; keeping existing balance on Apple Card."
+          )
+        );
+      }
+    } else {
+      const existingBalance = getAppleAccountBalance(db);
+      const { answer } = await inquirer.prompt([{theme,
+        type: "input",
+        name: "answer",
+        message: existed
+          ? `Current balance on Apple Card ${dim("(what you owe, blank to keep existing)")}`
+          : `Current balance on Apple Card ${dim("(what you owe)")}`,
+        default: existingBalance != null ? String(existingBalance) : undefined,
+        validate: (v: string) => {
+          if (v.trim() === "") return existed ? true : "Required — enter your current balance";
+          const n = parseFloat(v.replace(/[$,]/g, ""));
+          return isNaN(n) ? (existed ? "Enter a number or leave blank" : "Enter a number") : true;
+        },
+      }]);
+      balance = parseMoneyLoose(answer);
+    }
   }
 
   // --- Credit limit (optional) ---
-  let limit = parseMoney(opts.limit);
+  let limit = parseMoneyStrict("limit", opts.limit) as number | undefined;
   if (limit === undefined && !opts.dryRun) {
-    const existingLimit = getAppleAccountLimit(db);
-    const { answer } = await inquirer.prompt([{theme,
-      type: "input",
-      name: "answer",
-      message: `Credit limit ${dim("(optional, blank to skip)")}`,
-      default: existingLimit != null ? String(existingLimit) : undefined,
-      validate: (v: string) => {
-        if (v.trim() === "") return true;
-        const n = parseFloat(v.replace(/[$,]/g, ""));
-        return isNaN(n) ? "Enter a number or leave blank" : true;
-      },
-    }]);
-    limit = parseMoney(answer);
+    // Limit is optional — in non-TTY mode we just skip the prompt and proceed
+    // with `undefined`, rather than failing the whole import.
+    if (!process.stdin.isTTY) {
+      console.log(
+        chalk.yellow(
+          "  Non-interactive mode: skipping credit-limit prompt. Pass --limit <amount> to set one."
+        )
+      );
+      limit = undefined;
+    } else {
+      const existingLimit = getAppleAccountLimit(db);
+      const { answer } = await inquirer.prompt([{theme,
+        type: "input",
+        name: "answer",
+        message: `Credit limit ${dim("(optional, blank to skip)")}`,
+        default: existingLimit != null ? String(existingLimit) : undefined,
+        validate: (v: string) => {
+          if (v.trim() === "") return true;
+          const n = parseFloat(v.replace(/[$,]/g, ""));
+          return isNaN(n) ? "Enter a number or leave blank" : true;
+        },
+      }]);
+      limit = parseMoneyLoose(answer);
+    }
   }
 
   // --- Confirm --replace-range ---

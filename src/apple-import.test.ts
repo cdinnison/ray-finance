@@ -9,6 +9,7 @@ import {
   parseAppleCsv,
   runAppleImport,
   appleAccountExists,
+  CATEGORY_MAP,
 } from "./apple-import.js";
 import { applyRecategorizationRules } from "./recategorization.js";
 import { calculateDailyScore } from "./scoring/index.js";
@@ -432,6 +433,64 @@ describe("runAppleImport", () => {
     expect(rows.map((r) => r.no_restaurant_streak)).toEqual([1, 2, 3, 0]);
   });
 
+  it("does not chain streaks across gaps in daily_scores history", () => {
+    // Regression test for F003: calculateDailyScore previously picked up the
+    // most recent daily_scores row with `date < current` regardless of how
+    // large the gap was. Importing an Apple CSV months after a prior sync
+    // (Plaid) would silently chain streaks across the gap — e.g. a
+    // 2025-12-31 row with no_restaurant_streak=7 would make 2026-04-10
+    // report streak=8 instead of 1. Gap days must reset streaks to 1.
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 0 });
+
+    // Seed a daily_scores row from months before the import window with
+    // non-zero streaks. This simulates a prior sync's last scored day.
+    db.prepare(
+      `INSERT INTO daily_scores (date, score, restaurant_count, shopping_count, food_spend, total_spend, zero_spend, no_restaurant_streak, no_shopping_streak, on_pace_streak)
+       VALUES (?, 90, 0, 0, 0, 0, 1, 7, 7, 7)`
+    ).run("2025-12-31");
+
+    // Score 2026-04-10 (no restaurants on that date). Even though a prior
+    // row exists with streak=7, the ~3-month gap must reset streaks to 1.
+    calculateDailyScore(db, "2026-04-10");
+
+    const row = db.prepare(
+      `SELECT no_restaurant_streak, no_shopping_streak, on_pace_streak FROM daily_scores WHERE date = ?`
+    ).get("2026-04-10") as { no_restaurant_streak: number; no_shopping_streak: number; on_pace_streak: number };
+
+    expect(row.no_restaurant_streak).toBe(1);
+    expect(row.no_shopping_streak).toBe(1);
+    // on_pace_streak depends on budgets; freshDb has none, so allOnPace === true
+    // (the loop skips missing budgets) and it also resets from the gap to 1.
+    expect(row.on_pace_streak).toBe(1);
+  });
+
+  it("chains streaks across contiguous days (no gap)", () => {
+    // Complement to the gap-detection test: when a prev row IS from exactly
+    // the immediately prior calendar day, streaks must continue to chain.
+    // This protects against an overcorrection that would break the normal
+    // daily-sync path (yesterday → today).
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 0 });
+
+    // Seed 2026-04-09 directly (immediately prior to 2026-04-10).
+    db.prepare(
+      `INSERT INTO daily_scores (date, score, restaurant_count, shopping_count, food_spend, total_spend, zero_spend, no_restaurant_streak, no_shopping_streak, on_pace_streak)
+       VALUES (?, 90, 0, 0, 0, 0, 1, 5, 5, 5)`
+    ).run("2026-04-09");
+
+    calculateDailyScore(db, "2026-04-10");
+
+    const row = db.prepare(
+      `SELECT no_restaurant_streak, no_shopping_streak FROM daily_scores WHERE date = ?`
+    ).get("2026-04-10") as { no_restaurant_streak: number; no_shopping_streak: number };
+
+    // 2026-04-10 has no restaurant/shopping txns → streaks should chain off
+    // the 2026-04-09 row (5 → 6).
+    expect(row.no_restaurant_streak).toBe(6);
+    expect(row.no_shopping_streak).toBe(6);
+  });
+
   it("applies a category-only rule to rows with NULL category (Apple 'Other')", () => {
     // Apple maps 'Other' and any unmapped category to { category: null,
     // subcategory: null }. A rule matching by merchant_name should still fire
@@ -481,5 +540,79 @@ describe("runAppleImport", () => {
     expect(recat.transactionsUpdated).toBe(0);
     const count: any = db.prepare(`SELECT COUNT(*) as n FROM transactions`).get();
     expect(count.n).toBeGreaterThan(0);
+  });
+});
+
+describe("CATEGORY_MAP coverage", () => {
+  it("every mapped key produces a non-null Plaid category except 'Other'", () => {
+    // 'Other' is Apple's explicit miscellaneous bucket — mapped to
+    // {null, null} on purpose. Every other entry MUST produce a real Plaid
+    // category so imported rows participate in spending/scoring/budgets
+    // without requiring a user-added recat rule.
+    for (const [appleCat, mapping] of Object.entries(CATEGORY_MAP)) {
+      if (appleCat === "Other") {
+        expect(mapping.category).toBeNull();
+      } else {
+        expect(mapping.category, `CATEGORY_MAP["${appleCat}"] should map to a non-null Plaid category`).not.toBeNull();
+      }
+    }
+  });
+
+  it("routes new mappings (Debit, Food & Drinks, Travel, Health, Services) to the expected Plaid categories", () => {
+    const csvPath = writeCsv([
+      VALID_HEADER,
+      `04/10/2026,04/11/2026,"DAILY CASH CLAWBACK","Daily Cash","Debit","Debit","1.23","Adam"`,
+      `04/10/2026,04/11/2026,"COFFEE SHOP","Coffee Shop","Food & Drinks","Purchase","5.50","Adam"`,
+      `04/10/2026,04/11/2026,"AIRBNB STAY","Airbnb","Travel","Purchase","250.00","Adam"`,
+      `04/10/2026,04/11/2026,"CVS PHARMACY","Cvs Pharmacy","Health","Purchase","12.99","Adam"`,
+      `04/10/2026,04/11/2026,"DRY CLEANER","Dry Cleaner","Services","Purchase","18.00","Adam"`,
+    ]);
+
+    const db = freshDb();
+    const result = runAppleImport(db, { csvPath, balance: 0 });
+
+    // None of the 5 new categories should trigger an "Unknown Apple category"
+    // warning — they're all mapped now.
+    const unknownWarnings = result.warnings.filter(w => /Unknown Apple category/.test(w));
+    expect(unknownWarnings).toEqual([]);
+
+    const expected: Array<[string, string]> = [
+      ["Daily Cash", "TRANSFER_IN"],
+      ["Coffee Shop", "FOOD_AND_DRINK"],
+      ["Airbnb", "TRAVEL"],
+      ["Cvs Pharmacy", "MEDICAL"],
+      ["Dry Cleaner", "GENERAL_SERVICES"],
+    ];
+    for (const [merchant, category] of expected) {
+      const row: any = db.prepare(
+        `SELECT category FROM transactions WHERE merchant_name = ?`
+      ).get(merchant);
+      expect(row, `no transaction row for merchant ${merchant}`).toBeDefined();
+      expect(row.category, `${merchant} should map to ${category}`).toBe(category);
+    }
+
+    try { unlinkSync(csvPath); } catch {}
+  });
+
+  it("unmapped category produces a warning and NULL-category row", () => {
+    const csvPath = writeCsv([
+      VALID_HEADER,
+      `04/10/2026,04/11/2026,"UNKNOWN MERCHANT","Unknown Merchant","ZzUnknownCat","Purchase","9.99","Adam"`,
+    ]);
+
+    const db = freshDb();
+    const result = runAppleImport(db, { csvPath, balance: 0 });
+
+    const row: any = db.prepare(
+      `SELECT category, subcategory FROM transactions WHERE merchant_name = 'Unknown Merchant'`
+    ).get();
+    expect(row).toBeDefined();
+    expect(row.category).toBeNull();
+    expect(row.subcategory).toBeNull();
+
+    const matchingWarnings = result.warnings.filter(w => /Unknown Apple category "ZzUnknownCat"/.test(w));
+    expect(matchingWarnings).toHaveLength(1);
+
+    try { unlinkSync(csvPath); } catch {}
   });
 });

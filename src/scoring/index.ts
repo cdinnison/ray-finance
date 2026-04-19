@@ -118,10 +118,16 @@ export function calculateDailyScore(db: Database, dateStr?: string): DailyScore 
   score = Math.max(0, Math.min(100, score));
 
   // --- Streaks (look at previous day's record) ---
+  // Require the prev row to be from the immediately prior calendar day.
+  // Without this gap check, importing CSVs months after a prior sync would
+  // silently chain streaks across the gap (e.g. a 2024-12-31 row with
+  // no_restaurant_streak=7 would make 2026-01-01 report streak=8). Gap-days
+  // reset streaks to 1 (same as starting fresh).
+  const prevDate = new Date(new Date(date).getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const prev = db.prepare(
     `SELECT no_restaurant_streak, no_shopping_streak, on_pace_streak FROM daily_scores
-     WHERE date < ? ORDER BY date DESC LIMIT 1`
-  ).get(date) as { no_restaurant_streak: number; no_shopping_streak: number; on_pace_streak: number } | undefined;
+     WHERE date = ?`
+  ).get(prevDate) as { no_restaurant_streak: number; no_shopping_streak: number; on_pace_streak: number } | undefined;
 
   const noRestaurantStreak = restaurants.cnt === 0 ? (prev?.no_restaurant_streak || 0) + 1 : 0;
   const noShoppingStreak = shopping.cnt === 0 ? (prev?.no_shopping_streak || 0) + 1 : 0;

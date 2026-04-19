@@ -63,18 +63,22 @@ interface CategoryMapping {
 // Apple exports Title Case categories; Ray's scoring and spending queries expect
 // Plaid UPPERCASE_SNAKE_CASE codes. Mapping here so Apple transactions participate
 // in restaurant/shopping counts, budget checks, and spending totals.
-const CATEGORY_MAP: Record<string, CategoryMapping> = {
+export const CATEGORY_MAP: Record<string, CategoryMapping> = {
   Restaurants: { category: "FOOD_AND_DRINK", subcategory: "FOOD_AND_DRINK_RESTAURANT" },
+  "Food & Drinks": { category: "FOOD_AND_DRINK", subcategory: null },
   Grocery: { category: "FOOD_AND_DRINK", subcategory: "FOOD_AND_DRINK_GROCERIES" },
   Alcohol: { category: "FOOD_AND_DRINK", subcategory: "FOOD_AND_DRINK_ALCOHOL_AND_BARS" },
   Shopping: { category: "GENERAL_MERCHANDISE", subcategory: null },
+  Services: { category: "GENERAL_SERVICES", subcategory: null },
   Gas: { category: "TRANSPORTATION", subcategory: "TRANSPORTATION_GAS" },
   Transportation: { category: "TRANSPORTATION", subcategory: null },
   Tolls: { category: "TRANSPORTATION", subcategory: "TRANSPORTATION_TOLLS" },
   Airlines: { category: "TRAVEL", subcategory: "TRAVEL_FLIGHTS" },
   Hotels: { category: "TRAVEL", subcategory: "TRAVEL_LODGING" },
+  Travel: { category: "TRAVEL", subcategory: null },
   Entertainment: { category: "ENTERTAINMENT", subcategory: null },
   Medical: { category: "MEDICAL", subcategory: null },
+  Health: { category: "MEDICAL", subcategory: null },
   Utilities: { category: "RENT_AND_UTILITIES", subcategory: null },
   "Govt-services-parking": { category: "GOVERNMENT_AND_NON_PROFIT", subcategory: null },
   // Payment (negative): card payment from your bank. Matches Plaid's shape
@@ -84,11 +88,16 @@ const CATEGORY_MAP: Record<string, CategoryMapping> = {
   Installment: { category: "LOAN_PAYMENTS", subcategory: null },
   // Credit (negative): a refund. TRANSFER_IN keeps it out of income totals.
   Credit: { category: "TRANSFER_IN", subcategory: null },
+  // Debit (positive): Apple Daily Cash clawback, the mirror of Credit.
+  // TRANSFER_IN keeps it out of income AND spending totals (same rationale
+  // as Credit) — these are cash-reward corrections, not real transactions.
+  Debit: { category: "TRANSFER_IN", subcategory: null },
   Other: { category: null, subcategory: null },
 };
 
 const TYPE_LABELS: Record<string, string | null> = {
   Credit: "refund",
+  Debit: "adjustment",
   Installment: "installment",
 };
 
@@ -230,6 +239,10 @@ export function parseAppleCsv(text: string): {
 
   const rows: ParsedRow[] = [];
   const warnings: string[] = [];
+  // Count rows per unmapped Apple category so we can emit one warning per
+  // unique value rather than one per row. 'Other' is Apple's explicit
+  // miscellaneous bucket (mapped to {null, null} on purpose) and is excluded.
+  const unmappedCategoryCounts = new Map<string, number>();
   // Every row whose Transaction Date parsed, including rows later skipped for
   // bad amount/columns. `--replace-range` must delete across the *full* CSV
   // window — narrowing to surviving rows would leave stale rows at the edges
@@ -260,14 +273,26 @@ export function parseAppleCsv(text: string): {
       continue;
     }
 
+    const category = r[4];
+    if (category && category !== "Other" && !(category in CATEGORY_MAP)) {
+      unmappedCategoryCounts.set(category, (unmappedCategoryCounts.get(category) ?? 0) + 1);
+    }
+
     rows.push({
       transactionDate: date,
       description: r[2],
       merchant: r[3],
-      category: r[4],
+      category,
       type: r[5],
       amount,
     });
+  }
+
+  // One warning per unique unmapped category (not per row) so the post-import
+  // summary isn't flooded. Message names the category, row count, and how to
+  // fix via a recat rule — the same shape commands.ts already prints.
+  for (const [cat, count] of unmappedCategoryCounts) {
+    warnings.push(`Unknown Apple category "${cat}" (${count} rows) — imported without category. Add a recat rule: ray recat 'category:${cat}' → <PLAID_BUCKET>`);
   }
 
   let replaceWindow: { first: string; last: string } | null = null;
@@ -408,11 +433,18 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
        AND current_balance IS NOT NULL`
   );
 
-  // Mirror the resolved balance into the liabilities table. getDebts() uses
-  // liabilities as the authoritative source (with rate/min payment/due date)
-  // for any account_id it covers, and falls through to accounts only for
-  // account_ids not in liabilities. Without this upsert, Apple Card debt would
-  // appear only in the fallback path without rate/min-payment metadata.
+  // Mirror the resolved balance into the liabilities table. getDebts()
+  // prefers l.current_balance (via COALESCE(NULLIF(l.current_balance, 0),
+  // a.current_balance)) when a liabilities row exists, and uses l.type for
+  // the debt-view type label. Without this upsert, Apple Card debt would
+  // still appear via the accounts-only fallback path, but with a
+  // less-specific type label and no balance-routing through the liabilities
+  // table.
+  // Note: rate/min-payment/next-due are NOT populated here — Apple's CSV
+  // doesn't expose them. Those columns stay NULL, which getDebts renders as
+  // rate=0/min_payment=0/next_due=null. If/when we add a user-prompt path
+  // for rate and min-payment (analogous to the balance prompt), this upsert
+  // should be extended.
   // type='credit' matches Plaid's syncLiabilities convention (src/plaid/sync.ts)
   // — keeps debt-view labels consistent across import sources.
   const upsertLiability = db.prepare(
