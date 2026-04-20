@@ -491,6 +491,60 @@ describe("runAppleImport", () => {
     expect(row.no_shopping_streak).toBe(6);
   });
 
+  it("resets streaks when a single calendar day is missing from daily_scores", () => {
+    // Regression test for F003: a single-day gap (e.g. a skipped ray sync) must
+    // reset streaks under the current strict-gap policy. Routine recovery from
+    // a skipped sync is handled upstream in runDailySync's backfill loop, not
+    // by loosening this gap threshold.
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 0 });
+
+    // Seed 2026-04-08 with streak=5; skip 2026-04-09; score 2026-04-10.
+    db.prepare(
+      `INSERT INTO daily_scores (date, score, restaurant_count, shopping_count, food_spend, total_spend, zero_spend, no_restaurant_streak, no_shopping_streak, on_pace_streak)
+       VALUES (?, 90, 0, 0, 0, 0, 1, 5, 5, 5)`
+    ).run("2026-04-08");
+
+    calculateDailyScore(db, "2026-04-10");
+
+    const row = db.prepare(
+      `SELECT no_restaurant_streak, no_shopping_streak, on_pace_streak FROM daily_scores WHERE date = ?`
+    ).get("2026-04-10") as { no_restaurant_streak: number; no_shopping_streak: number; on_pace_streak: number };
+
+    // Single-day gap → all streaks reset to 1 (fresh chain starts today).
+    expect(row.no_restaurant_streak).toBe(1);
+    expect(row.no_shopping_streak).toBe(1);
+    expect(row.on_pace_streak).toBe(1);
+  });
+
+  it("backfilling through a single-day gap rebuilds the chain (mirrors runDailySync backfill)", () => {
+    // Regression test for F003 backfill: if a user skips a sync on day N, then
+    // runs ray sync on day N+1, runDailySync backfills day N before scoring
+    // day N+1 so streaks chain off the freshly-backfilled row instead of
+    // silently resetting.
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 0 });
+
+    // Seed 2026-04-08 with streak=5; simulate the backfill loop scoring
+    // 2026-04-09 (un-scored) before scoring 2026-04-10.
+    db.prepare(
+      `INSERT INTO daily_scores (date, score, restaurant_count, shopping_count, food_spend, total_spend, zero_spend, no_restaurant_streak, no_shopping_streak, on_pace_streak)
+       VALUES (?, 90, 0, 0, 0, 0, 1, 5, 5, 5)`
+    ).run("2026-04-08");
+
+    calculateDailyScore(db, "2026-04-09");
+    calculateDailyScore(db, "2026-04-10");
+
+    const row = db.prepare(
+      `SELECT no_restaurant_streak, no_shopping_streak FROM daily_scores WHERE date = ?`
+    ).get("2026-04-10") as { no_restaurant_streak: number; no_shopping_streak: number };
+
+    // Backfilled 2026-04-09 chains off 2026-04-08 (5 → 6). 2026-04-10 then
+    // chains off 2026-04-09 (6 → 7). No permanent streak loss.
+    expect(row.no_restaurant_streak).toBe(7);
+    expect(row.no_shopping_streak).toBe(7);
+  });
+
   it("applies a category-only rule to rows with NULL category (Apple 'Other')", () => {
     // Apple maps 'Other' and any unmapped category to { category: null,
     // subcategory: null }. A rule matching by merchant_name should still fire

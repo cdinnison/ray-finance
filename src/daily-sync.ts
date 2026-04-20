@@ -201,8 +201,30 @@ export async function runDailySync(
   // the score they see on the same day the sync ran, not tomorrow's.
   applyRecategorizationRules(db, logger);
 
-  // Calculate daily score for yesterday
+  // Calculate daily score for yesterday. Also backfill any un-scored calendar
+  // days between the newest daily_scores row and yesterday so a single skipped
+  // sync cannot permanently break streak chains — calculateDailyScore only
+  // chains from the immediately prior calendar day, so resumption after a gap
+  // without backfill would silently reset every streak to 1.
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const newestScored = db
+    .prepare(`SELECT MAX(date) as date FROM daily_scores`)
+    .get() as { date: string | null };
+  const backfillDates: string[] = [];
+  if (newestScored.date && newestScored.date < yesterday) {
+    // Start the day after the newest scored row; stop before yesterday (which
+    // is scored below unconditionally).
+    let cursor = new Date(new Date(newestScored.date).getTime() + 24 * 60 * 60 * 1000);
+    const yesterdayMs = new Date(yesterday).getTime();
+    while (cursor.getTime() < yesterdayMs) {
+      backfillDates.push(cursor.toISOString().slice(0, 10));
+      cursor = new Date(cursor.getTime() + 24 * 60 * 60 * 1000);
+    }
+  }
+  for (const d of backfillDates) {
+    const score = calculateDailyScore(db, d);
+    logger.log(`  Daily score (${d}, backfilled): ${score.score}/100`);
+  }
   const dailyScore = calculateDailyScore(db, yesterday);
   logger.log(`  Daily score (${yesterday}): ${dailyScore.score}/100`);
 

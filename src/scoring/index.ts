@@ -118,20 +118,32 @@ export function calculateDailyScore(db: Database, dateStr?: string): DailyScore 
   score = Math.max(0, Math.min(100, score));
 
   // --- Streaks (look at previous day's record) ---
-  // Require the prev row to be from the immediately prior calendar day.
-  // Without this gap check, importing CSVs months after a prior sync would
-  // silently chain streaks across the gap (e.g. a 2024-12-31 row with
-  // no_restaurant_streak=7 would make 2026-01-01 report streak=8). Gap-days
-  // reset streaks to 1 (same as starting fresh).
-  const prevDate = new Date(new Date(date).getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  // Chain streaks only when the most recent prior daily_scores row is from the
+  // immediately prior calendar day (gap <= 1). Without a gap check, importing
+  // CSVs months after a prior sync would silently chain streaks across the gap
+  // (e.g. a 2024-12-31 row with no_restaurant_streak=7 would make 2026-01-01
+  // report streak=8). Gap-days reset streaks to 1 (same as starting fresh).
+  //
+  // Note: a single skipped daily sync would also trigger a reset here — that
+  // case is mitigated upstream in runDailySync, which backfills un-scored
+  // calendar days between the newest daily_scores.date and yesterday on each
+  // run so a single missed sync cannot permanently break streaks.
   const prev = db.prepare(
-    `SELECT no_restaurant_streak, no_shopping_streak, on_pace_streak FROM daily_scores
-     WHERE date = ?`
-  ).get(prevDate) as { no_restaurant_streak: number; no_shopping_streak: number; on_pace_streak: number } | undefined;
+    `SELECT date, no_restaurant_streak, no_shopping_streak, on_pace_streak FROM daily_scores
+     WHERE date < ? ORDER BY date DESC LIMIT 1`
+  ).get(date) as { date: string; no_restaurant_streak: number; no_shopping_streak: number; on_pace_streak: number } | undefined;
 
-  const noRestaurantStreak = restaurants.cnt === 0 ? (prev?.no_restaurant_streak || 0) + 1 : 0;
-  const noShoppingStreak = shopping.cnt === 0 ? (prev?.no_shopping_streak || 0) + 1 : 0;
-  const onPaceStreak = allOnPace ? (prev?.on_pace_streak || 0) + 1 : 0;
+  // Compute the calendar-day gap between the current date and the prev row.
+  // Using UTC-anchored epoch math keeps this DST-safe regardless of the local
+  // timezone (ISO YYYY-MM-DD strings parse as UTC midnight).
+  const gapDays = prev
+    ? Math.round((new Date(date).getTime() - new Date(prev.date).getTime()) / (24 * 60 * 60 * 1000))
+    : Infinity;
+  const chainable = gapDays <= 1 ? prev : undefined;
+
+  const noRestaurantStreak = restaurants.cnt === 0 ? (chainable?.no_restaurant_streak || 0) + 1 : 0;
+  const noShoppingStreak = shopping.cnt === 0 ? (chainable?.no_shopping_streak || 0) + 1 : 0;
+  const onPaceStreak = allOnPace ? (chainable?.on_pace_streak || 0) + 1 : 0;
 
   // Store
   db.prepare(

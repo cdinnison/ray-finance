@@ -86,7 +86,7 @@ export const CATEGORY_MAP: Record<string, CategoryMapping> = {
   Payment: { category: "LOAN_PAYMENTS", subcategory: null },
   // Installment (positive): Apple Card monthly financing charge (e.g., iPhone).
   Installment: { category: "LOAN_PAYMENTS", subcategory: null },
-  // Credit (negative): a refund. TRANSFER_IN keeps it out of income totals.
+  // Credit (negative): a refund. TRANSFER_IN keeps it out of income AND spending totals.
   Credit: { category: "TRANSFER_IN", subcategory: null },
   // Debit (positive): Apple Daily Cash clawback, the mirror of Credit.
   // TRANSFER_IN keeps it out of income AND spending totals (same rationale
@@ -292,7 +292,7 @@ export function parseAppleCsv(text: string): {
   // summary isn't flooded. Message names the category, row count, and how to
   // fix via a recat rule — the same shape commands.ts already prints.
   for (const [cat, count] of unmappedCategoryCounts) {
-    warnings.push(`Unknown Apple category "${cat}" (${count} rows) — imported without category. Add a recat rule: ray recat 'category:${cat}' → <PLAID_BUCKET>`);
+    warnings.push(`Unknown Apple category "${cat}" (${count} rows) — imported without category. To recategorize, run \`ray\` and ask the assistant (e.g. "recategorize transactions where the source category is X to Y").`);
   }
 
   let replaceWindow: { first: string; last: string } | null = null;

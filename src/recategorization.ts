@@ -17,8 +17,10 @@ const ALLOWED_MATCH_FIELDS = ["name", "merchant_name", "category", "subcategory"
  * Apply every row in `recategorization_rules` as an UPDATE against
  * `transactions`. Called from both `runDailySync` and `runImportApple`; owns
  * its own log output so both callers produce identical per-rule lines and the
- * grand-total summary. Silent when no rules fire. Accepts an optional
- * SyncLogger so background sync under Ink can route output away from stdout.
+ * grand-total summary. Emits a per-rule logger.error for any rule with an
+ * invalid match_field; otherwise silent when no rules match a transaction.
+ * Accepts an optional SyncLogger so background sync under Ink can route
+ * output away from stdout.
  */
 export function applyRecategorizationRules(db: Database, logger: SyncLogger = console): RecategorizationResult {
   const rules = db.prepare(

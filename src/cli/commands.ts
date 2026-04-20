@@ -21,7 +21,9 @@ import {
   sumAppleRowsInRange,
   parseAppleCsv,
 } from "../apple-import.js";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { resolve } from "path";
+import { homedir } from "os";
 import { heading, progressBar, formatMoney, formatMoneyColored, padColumns, dim, formatDuration, formatError, renderLogo, institutionName } from "./format.js";
 import { getUpcomingBills } from "../db/bills.js";
 
@@ -710,7 +712,7 @@ export function showRecap(period = "last_month"): void {
 
 export async function runImportApple(
   csvPath: string,
-  opts: { balance?: string; limit?: string; replaceRange?: boolean; dryRun?: boolean } = {}
+  opts: { balance?: string; limit?: string; replaceRange?: boolean; dryRun?: boolean; yes?: boolean } = {}
 ): Promise<void> {
   const inquirer = (await import("inquirer")).default;
   const ora = (await import("ora")).default;
@@ -808,7 +810,7 @@ export async function runImportApple(
     // Non-TTY (scripted / CI / piped) must never block on inquirer. For first
     // runs the balance is required, so exit with a clear error naming the
     // flag. For re-imports we can safely leave balance undefined because the
-    // `ON CONFLICT ... COALESCE(excluded.balance, accounts.balance)` in
+    // `ON CONFLICT ... COALESCE(excluded.current_balance, current_balance)` in
     // insertAcc preserves the prior value.
     if (!process.stdin.isTTY) {
       if (!existed) {
@@ -875,15 +877,24 @@ export async function runImportApple(
     const existing = countAppleRowsInRange(db, parsePreview.replaceFirst, parsePreview.replaceLast);
     if (existing > 0) {
       const total = sumAppleRowsInRange(db, parsePreview.replaceFirst, parsePreview.replaceLast);
-      const { confirm } = await inquirer.prompt([{theme,
-        type: "confirm",
-        name: "confirm",
-        message: `Delete ${chalk.bold(String(existing))} existing Apple Card rows (${total < 0 ? "-" : ""}${rawFormatMoney(total)}) in range ${parsePreview.replaceFirst} → ${parsePreview.replaceLast}?`,
-        default: false,
-      }]);
-      if (!confirm) {
-        console.log(dim("  Aborted."));
-        return;
+      if (!process.stdin.isTTY && !opts.yes) {
+        // Non-TTY (scripted / CI / piped) must never block on inquirer.
+        // Row count and date range are already in the summary above, so the
+        // error stays terse.
+        console.error(chalk.red("Error: Non-interactive mode: pass --yes to confirm."));
+        process.exit(1);
+      }
+      if (!opts.yes) {
+        const { confirm } = await inquirer.prompt([{theme,
+          type: "confirm",
+          name: "confirm",
+          message: `Delete ${chalk.bold(String(existing))} existing Apple Card rows (${total < 0 ? "-" : ""}${rawFormatMoney(total)}) in range ${parsePreview.replaceFirst} → ${parsePreview.replaceLast}?`,
+          default: false,
+        }]);
+        if (!confirm) {
+          console.log(dim("  Aborted."));
+          return;
+        }
       }
     }
   }
@@ -900,10 +911,10 @@ export async function runImportApple(
       dryRun: opts.dryRun,
       preParsed: parsed,
     });
-    // stop() here rather than succeed() — post-import output (warnings,
-    // summary, recat, scoring, achievements) prints below; succeed() fires
-    // after all of it so the tick doesn't precede the output it summarises.
-    spinner.stop();
+    // Fire the tick immediately on successful import; the detailed output
+    // (warnings, summary, recat, scoring, achievements) prints below under
+    // its own headings and doesn't need the spinner's ornament trailing it.
+    spinner.succeed(opts.dryRun ? "Preview complete." : "Import complete.");
   } catch (err: any) {
     spinner.fail(formatError(err, "Import failed"));
     process.exit(1);
@@ -911,10 +922,22 @@ export async function runImportApple(
 
   // --- Warnings (printed first so they can't be missed below the summary) ---
   if (result.warnings.length > 0) {
+    // When warnings exceed the terminal-truncation threshold, dump all of
+    // them to a timestamped log file under ~/.ray/logs so the user has a
+    // way to inspect the tail. Skip the file write when everything fits
+    // on-screen — no log file needed.
+    let logPath: string | null = null;
+    if (result.warnings.length > 10) {
+      const logDir = resolve(homedir(), ".ray", "logs");
+      mkdirSync(logDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+      logPath = resolve(logDir, `import-apple-warnings-${stamp}.log`);
+      writeFileSync(logPath, result.warnings.join("\n") + "\n");
+    }
     console.log(`\n  ${chalk.yellow("Warnings:")}`);
     for (const w of result.warnings.slice(0, 10)) console.log(dim("    " + w));
-    if (result.warnings.length > 10) {
-      console.log(dim(`    ... and ${result.warnings.length - 10} more`));
+    if (result.warnings.length > 10 && logPath) {
+      console.log(dim(`    ... and ${result.warnings.length - 10} more — full list at ${logPath}`));
     }
   }
 
@@ -990,6 +1013,10 @@ export async function runImportApple(
       // can survive for boundary dates that were deleted due to malformed rows.
       if (backfillWindow) {
         const { start, end } = backfillWindow;
+        const dayCount = Math.round((Date.parse(end) - Date.parse(start)) / 86400000) + 1;
+        if (dayCount > 1) {
+          console.log(dim(`    Backfilling daily scores for ${dayCount} day${dayCount === 1 ? '' : 's'} (${start} → ${end})...`));
+        }
         let d = start;
         let daysScored = 0;
         while (d <= end) {
@@ -1007,10 +1034,9 @@ export async function runImportApple(
 
     const newAchievements = checkAchievements(db);
     for (const a of newAchievements) {
-      console.log(`  Achievement unlocked: ${a.name} — ${a.description}`);
+      console.log(`    🏆 ${chalk.bold(a.name)} — ${a.description}`);
     }
   }
 
-  spinner.succeed(opts.dryRun ? "Preview complete." : "Import complete.");
   console.log("");
 }

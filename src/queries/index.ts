@@ -521,6 +521,7 @@ export function getDebts(db: Database): {
       minPayment: r.min_payment || 0,
       type: r.type || "unknown",
       nextDue: r.next_due || null,
+      _sortRate: r.rate, // preserve null/undefined for sort; not returned
     })),
     ...orphanCredits.map((r: any) => ({
       name: r.name,
@@ -529,11 +530,20 @@ export function getDebts(db: Database): {
       minPayment: 0,
       type: r.type,
       nextDue: null,
+      _sortRate: null, // orphan credits have no interest_rate
     })),
   ];
 
+  // Sort combined list by interest_rate DESC so orphan credits (no liabilities
+  // row, null rate) fall to the bottom alongside any null-rate liabilities.
+  debts.sort((a, b) => {
+    const ra = a._sortRate ?? -Infinity;
+    const rb = b._sortRate ?? -Infinity;
+    return rb - ra;
+  });
+
   const totalDebt = debts.reduce((s: number, d) => s + d.balance, 0);
-  return { totalDebt, debts };
+  return { totalDebt, debts: debts.map(({ _sortRate, ...rest }) => rest) };
 }
 
 // --- Spending comparison ---
