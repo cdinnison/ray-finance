@@ -267,20 +267,21 @@ export function parseAppleCsv(text: string): {
   // unique value rather than one per row. 'Other' is Apple's explicit
   // miscellaneous bucket (mapped to {null, null} on purpose) and is excluded.
   const unmappedCategoryCounts = new Map<string, number>();
-  // Every row whose Transaction Date parsed, including rows later skipped for
-  // bad amount/columns. `--replace-range` must delete across the *full* CSV
-  // window — narrowing to surviving rows would leave stale rows at the edges
-  // when a boundary row has a bad amount.
+  // Every row whose Transaction Date parsed AND has a full column count,
+  // including rows later skipped for a bad amount. `--replace-range` must
+  // delete across the *full* CSV window — narrowing to surviving rows would
+  // leave stale rows at the edges when a boundary row has a bad amount.
+  // We deliberately do NOT widen the window based on truncated (too-few
+  // columns) rows: a row missing most of its fields is most likely corrupted
+  // CSV (e.g. a partial line from an unterminated quote recovery) and
+  // trusting its first-column date could silently amplify --replace-range's
+  // DELETE into neighboring days of otherwise-healthy data.
   const allParsedDates: string[] = [];
   for (let i = 1; i < raw.length; i++) {
     const r = raw[i];
     if (r.length === 1 && r[0] === "") continue;
 
-    // Parse date first — recorded in allParsedDates regardless of later
-    // column/amount failures, so --replace-range covers the full CSV window
-    // even when a boundary row has too few columns.
     const date = r.length >= 1 ? parseDate(r[0]) : null;
-    if (date) allParsedDates.push(date);
 
     if (r.length < EXPECTED_HEADER.length) {
       warnings.push(`Row ${i + 1}: expected ${EXPECTED_HEADER.length} columns, got ${r.length} — skipped`);
@@ -290,6 +291,12 @@ export function parseAppleCsv(text: string): {
       warnings.push(`Row ${i + 1}: unparseable Transaction Date "${r[0]}" — skipped`);
       continue;
     }
+
+    // Record the date only after we've confirmed the row has a full column
+    // count AND a parseable date. Rows that clear this bar may still be
+    // skipped below (e.g. bad amount) but their date legitimately belongs in
+    // the replace-range window.
+    allParsedDates.push(date);
 
     const amount = parseAmount(r[6]);
     if (amount === null) {
@@ -536,12 +543,26 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
     ).all(ACCOUNT_ID, replaceFirst, replaceLast) as typeof preserved;
   }
 
+  // COALESCE direction is deliberately asymmetric between the two field
+  // groups:
+  //   - note/label: fresh INSERT leaves these NULL (Apple CSV doesn't carry
+  //     them), so `COALESCE(note, ?)` = "keep whatever the row has, else use
+  //     the snapshot". In practice the snapshot always wins, which is what
+  //     we want — user-authored notes/labels must survive a re-import.
+  //   - category/subcategory: fresh INSERT writes the Apple-source category
+  //     (via CATEGORY_MAP) when Apple provides one. A user who manually
+  //     recategorized a row BEFORE --replace-range should have that override
+  //     preserved, so `COALESCE(?, category)` = "prefer the snapshot; fall
+  //     back to the Apple-source value only when the user didn't set one".
+  //     When the snapshot entry was NULL (row was in `preserved` only
+  //     because of note/label), the COALESCE falls through to the Apple
+  //     value and re-categorization still happens naturally.
   const restoreUserFields = db.prepare(
     `UPDATE transactions
         SET note        = COALESCE(note, ?),
             label       = COALESCE(label, ?),
-            category    = COALESCE(category, ?),
-            subcategory = COALESCE(subcategory, ?)
+            category    = COALESCE(?, category),
+            subcategory = COALESCE(?, subcategory)
       WHERE transaction_id = ?`
   );
 
@@ -591,9 +612,10 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
     }
 
     // Re-apply snapshotted user fields to any re-inserted rows that share the
-    // same transaction_id. COALESCE keeps whatever the CSV row already
-    // provided (e.g. fresh Apple category) unless the column is NULL, in
-    // which case we fall back to the user-preserved value.
+    // same transaction_id. See `restoreUserFields` above for the asymmetric
+    // COALESCE semantics: note/label always restore from snapshot, while
+    // category/subcategory prefer the snapshot and fall back to the
+    // Apple-source value only when the user hadn't set one.
     if (opts.replaceRange && preserved.length > 0) {
       for (const p of preserved) {
         restoreUserFields.run(p.note, p.label, p.category, p.subcategory, p.transaction_id);

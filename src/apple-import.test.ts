@@ -118,18 +118,42 @@ describe("parseAppleCsv", () => {
     expect(rows[0].transactionDate).toBe("2026-04-13");
   });
 
-  it("replaceWindow includes dates from short rows at boundaries", () => {
-    // A boundary row with too few columns but a valid date should still
-    // widen the --replace-range delete window.
+  it("replaceWindow excludes dates from short (too-few-column) rows", () => {
+    // Regression for F004: a short row is likely corrupted CSV (e.g. a
+    // partial line recovered from an unterminated-quote truncation). Its
+    // first-column date must NOT widen the --replace-range delete window,
+    // because that could silently amplify the DELETE into neighboring days
+    // of otherwise-healthy data. Bad-amount rows (below) still widen —
+    // those have a full column count and are structurally sound apart from
+    // one malformed field.
     const csv = [
       "Transaction Date,Clearing Date,Description,Merchant,Category,Type,Amount (USD),Purchased By",
-      '04/08/2026,04/09/2026,"SHORT ROW"',  // only 3 columns — skipped, but date is valid
+      '04/08/2026,04/09/2026,"SHORT ROW"',  // only 3 columns — skipped AND not in window
       '04/10/2026,04/11/2026,"STARBUCKS","Starbucks","Restaurants","Purchase","6.45","Adam"',
     ].join("\n");
     const { rows, warnings, replaceWindow } = parseAppleCsv(csv);
     expect(rows).toHaveLength(1);
     expect(warnings).toHaveLength(1);
-    expect(replaceWindow).toEqual({ first: "2026-04-08", last: "2026-04-10" });
+    expect(warnings[0]).toMatch(/expected 8 columns, got 3/);
+    // Only the 2026-04-10 row's date contributes to the window.
+    expect(replaceWindow).toEqual({ first: "2026-04-10", last: "2026-04-10" });
+  });
+
+  it("surfaces an unterminated quoted field spanning to EOF (with embedded newlines) as an error, not a column-count warning", () => {
+    // Regression for F004: a quoted field left open mid-row — even one that
+    // spans several newlines before the file ends — must throw from the
+    // CSV layer rather than being silently consumed. Previously the parser
+    // would return partial rows; parseAppleCsv would then emit a generic
+    // "expected N columns, got M" warning and accept a corrupted import.
+    const truncated = [
+      "Transaction Date,Clearing Date,Description,Merchant,Category,Type,Amount (USD),Purchased By",
+      `04/10/2026,04/11/2026,"Legit row","M","Other","Purchase","1.00","Adam"`,
+      // Unterminated quote that swallows all remaining text including newlines.
+      `04/11/2026,04/12/2026,"Description spans`,
+      "multiple lines",
+      "and runs all the way to EOF without a closing quote",
+    ].join("\n");
+    expect(() => parseAppleCsv(truncated)).toThrow(/unterminated quoted field/);
   });
 });
 
@@ -645,36 +669,82 @@ describe("runAppleImport", () => {
   it("preserves user-authored notes/labels across --replace-range (and restores user category/subcategory onto rows the CSV left NULL)", () => {
     // Regression for F021: without the snapshot/restore logic, DELETE + INSERT
     // would silently drop user-authored note/label on every re-run. The
-    // restore uses COALESCE semantics — the fresh CSV's category/subcategory
-    // wins when present (so re-sync to refined Apple data still works), and
-    // the user-preserved category fills in only when the fresh row left it
-    // NULL (e.g. Apple's 'Other' / unmapped categories).
+    // restore uses asymmetric COALESCE semantics — note/label always take
+    // the snapshot (fresh insert leaves them NULL anyway), while a user's
+    // manual category/subcategory override wins over the Apple-source value
+    // the CSV would otherwise re-apply.
     const db = freshDb();
 
     // Seed the initial import.
     runAppleImport(db, { csvPath: path, balance: 0 });
 
-    // User annotates and labels the Poke row (Apple-source category remains).
+    // User annotates and labels the Poke row, AND manually recategorizes it
+    // away from Apple's FOOD_AND_DRINK default — simulating either a manual
+    // edit via the AI assistant or a deliberate override that should not be
+    // clobbered by the Apple-source mapping on re-sync.
     const poke: any = db.prepare(
       `SELECT transaction_id FROM transactions WHERE merchant_name = 'Poke Tiki Costa Mesa'`
     ).get();
     db.prepare(
-      `UPDATE transactions SET note = ?, label = ? WHERE transaction_id = ?`
-    ).run("user note: lunch", "work-meal", poke.transaction_id);
+      `UPDATE transactions
+          SET note = ?, label = ?, category = ?, subcategory = ?
+        WHERE transaction_id = ?`
+    ).run(
+      "user note: lunch",
+      "work-meal",
+      "GENERAL_MERCHANDISE",
+      "GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES",
+      poke.transaction_id
+    );
 
-    // Re-run with --replace-range (the DELETE-then-INSERT path).
+    // Re-run with --replace-range (the DELETE-then-INSERT path). The fresh
+    // Apple row will try to write FOOD_AND_DRINK / FOOD_AND_DRINK_RESTAURANT
+    // — the restore layer must keep the user's override instead.
     runAppleImport(db, { csvPath: path, balance: 0, replaceRange: true });
 
-    // Note/label must survive the re-import (fresh insert leaves them NULL).
     const after: any = db.prepare(
       `SELECT note, label, category, subcategory FROM transactions WHERE transaction_id = ?`
     ).get(poke.transaction_id);
     expect(after).toBeDefined();
+    // Note/label must survive the re-import (fresh insert leaves them NULL).
     expect(after.note).toBe("user note: lunch");
     expect(after.label).toBe("work-meal");
-    // Apple-source category still reflects the CSV (not overwritten).
-    expect(after.category).toBe("FOOD_AND_DRINK");
-    expect(after.subcategory).toBe("FOOD_AND_DRINK_RESTAURANT");
+    // User-applied category/subcategory must win over the Apple-source
+    // mapping that the fresh INSERT wrote — otherwise every --replace-range
+    // silently reverts manual recategorizations.
+    expect(after.category).toBe("GENERAL_MERCHANDISE");
+    expect(after.subcategory).toBe("GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES");
+  });
+
+  it("lets the Apple-source category fill in when the user only annotated note/label (no manual category override)", () => {
+    // Complement to the override test above: when the snapshotted
+    // category/subcategory are NULL (because the user only set a note),
+    // COALESCE(?, category) must fall through to the Apple-source value
+    // that the fresh INSERT wrote. Otherwise re-imports would leave these
+    // rows un-categorized after --replace-range.
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 0 });
+
+    const refund: any = db.prepare(
+      `SELECT transaction_id FROM transactions WHERE merchant_name = 'Sq Vacancy Coffee (return)'`
+    ).get();
+
+    // Clear the Apple-source category so the `preserved` SELECT picks this
+    // row up (the snapshot's category/subcategory are NULL), then annotate
+    // a note. The row is in-range for the CSV window.
+    db.prepare(
+      `UPDATE transactions SET category = NULL, subcategory = NULL, note = ? WHERE transaction_id = ?`
+    ).run("user note: refund tracking", refund.transaction_id);
+
+    runAppleImport(db, { csvPath: path, balance: 0, replaceRange: true });
+
+    const after: any = db.prepare(
+      `SELECT note, category, subcategory FROM transactions WHERE transaction_id = ?`
+    ).get(refund.transaction_id);
+    expect(after).toBeDefined();
+    expect(after.note).toBe("user note: refund tracking");
+    // Snapshot had NULL category → COALESCE falls through to fresh CSV value.
+    expect(after.category).toBe("TRANSFER_IN");
   });
 
   it("skips a rule with invalid match_field without throwing or touching data", () => {
