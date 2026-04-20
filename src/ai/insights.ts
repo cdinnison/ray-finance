@@ -95,11 +95,12 @@ function buildSpending(db: Database.Database): string {
   const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const daysLeft = daysInMonth - dayOfMonth;
 
-  // This month's total spending
+  // This month's total spending. NULL-safe category filter so Apple rows with
+  // no mapped category (apple-import.ts CATEGORY_MAP NULL cases) are counted.
   const thisMonthSpend = db.prepare(
     `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
      WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-     AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')`
+     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))`
   ).get(monthStart.toISOString().slice(0, 10), today) as { total: number };
 
   const lines: string[] = [];
@@ -190,11 +191,12 @@ function buildUpcoming(db: Database.Database): string | null {
     parts.push(`UPCOMING: ${billStrs.join(", ")}`);
   }
 
-  // Low balance warning
+  // Low balance warning. NULL-safe category filter (see apple-import.ts for
+  // the NULL-category rows this must include).
   const avgMonthlyExpenses = db.prepare(
     `SELECT COALESCE(SUM(amount), 0) / 3.0 as avg FROM transactions
      WHERE amount > 0 AND date > date('now', '-90 days') AND pending = 0
-     AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN')`
+     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN'))`
   ).get() as { avg: number };
 
   const lowAccounts = db.prepare(
@@ -227,11 +229,11 @@ function buildUpcoming(db: Database.Database): string | null {
 function buildAnomalies(db: Database.Database): string | null {
   const parts: string[] = [];
 
-  // Large transactions in last 7 days (>$200)
+  // Large transactions in last 7 days (>$200). NULL-safe category filter.
   const largeTx = db.prepare(
     `SELECT name, merchant_name, amount, date FROM transactions
      WHERE amount > 200 AND date > date('now', '-7 days') AND pending = 0
-     AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS', 'RENT_AND_UTILITIES')
+     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS', 'RENT_AND_UTILITIES'))
      ORDER BY amount DESC LIMIT 3`
   ).all() as { name: string; merchant_name: string | null; amount: number; date: string }[];
 
@@ -250,7 +252,7 @@ function buildAnomalies(db: Database.Database): string | null {
     const thisMonth = db.prepare(
       `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
        WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-       AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')`
+       AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))`
     ).get(monthStart, today) as { total: number };
 
     const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().slice(0, 10);
@@ -259,7 +261,7 @@ function buildAnomalies(db: Database.Database): string | null {
     const lastMonth = db.prepare(
       `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
        WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-       AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')`
+       AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))`
     ).get(lastMonthStart, lastMonthEnd) as { total: number };
 
     if (lastMonth.total > 0) {
@@ -315,7 +317,7 @@ export function cliBriefing(db: Database.Database): string | null {
   const thisMonthSpend = db.prepare(
     `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
      WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-     AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')`
+     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))`
   ).get(monthStart.toISOString().slice(0, 10), today) as { total: number };
 
   const oldestTx = db.prepare(`SELECT MIN(date) as d FROM transactions`).get() as { d: string | null };

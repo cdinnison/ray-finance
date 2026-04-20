@@ -52,13 +52,17 @@ export function calculateDailyScore(db: Database, dateStr?: string): DailyScore 
      AND category = 'FOOD_AND_DRINK'`
   ).get(date, nextDate) as { total: number };
 
-  // Total discretionary spend (exclude fixed bills, transfers, loan payments)
+  // Total discretionary spend (exclude fixed bills, transfers, loan payments).
+  // `category IS NULL OR category NOT IN (...)` keeps rows with NULL category
+  // (Apple 'Other' and unmapped Apple rows — see apple-import.ts CATEGORY_MAP)
+  // in the spend total. Plain `NOT IN` silently drops NULL rows under SQLite
+  // three-valued logic, understating discretionary spend.
   const totalSpend = db.prepare(
     `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
      WHERE (date = ? OR (date = ? AND pending = 1)) AND amount > 0
-     AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS',
+     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS',
        'LOAN_PAYMENTS_CAR_PAYMENT', 'LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT',
-       'RENT_AND_UTILITIES', 'RENT_AND_UTILITIES_RENT')`
+       'RENT_AND_UTILITIES', 'RENT_AND_UTILITIES_RENT'))`
   ).get(date, nextDate) as { total: number };
 
   // Get budget pace for food
@@ -179,14 +183,23 @@ export function calculateDailyScore(db: Database, dateStr?: string): DailyScore 
 export function checkAchievements(db: Database): Achievement[] {
   const newlyUnlocked: Achievement[] = [];
 
+  // Streak-based achievements scan MAX(*_streak) over the whole
+  // daily_scores table rather than the most recent row. The streak
+  // columns already encode calendar-day chaining (calculateDailyScore
+  // resets to 1 on a gap, chains on a one-day gap), so MAX gives the
+  // peak chain length ever reached — including peaks that broke before
+  // today. This matters for `ray import-apple`, which backfills months
+  // at once: an earlier "only the latest row" check silently denied
+  // unlocks for streaks that started, crossed the threshold, then broke
+  // inside the imported range.
   const definitions: { key: string; name: string; description: string; check: () => boolean }[] = [
     {
       key: "clean_week",
       name: "Clean Week",
       description: "7 consecutive days with all budgets on pace",
       check: () => {
-        const row = db.prepare(`SELECT on_pace_streak FROM daily_scores ORDER BY date DESC LIMIT 1`).get() as any;
-        return row?.on_pace_streak >= 7;
+        const row = db.prepare(`SELECT MAX(on_pace_streak) as peak FROM daily_scores`).get() as any;
+        return row?.peak >= 7;
       },
     },
     {
@@ -194,8 +207,8 @@ export function checkAchievements(db: Database): Achievement[] {
       name: "Home Chef",
       description: "14-day no-restaurant streak",
       check: () => {
-        const row = db.prepare(`SELECT no_restaurant_streak FROM daily_scores ORDER BY date DESC LIMIT 1`).get() as any;
-        return row?.no_restaurant_streak >= 14;
+        const row = db.prepare(`SELECT MAX(no_restaurant_streak) as peak FROM daily_scores`).get() as any;
+        return row?.peak >= 14;
       },
     },
     {
@@ -203,8 +216,8 @@ export function checkAchievements(db: Database): Achievement[] {
       name: "Kitchen Hero",
       description: "7-day no-restaurant streak",
       check: () => {
-        const row = db.prepare(`SELECT no_restaurant_streak FROM daily_scores ORDER BY date DESC LIMIT 1`).get() as any;
-        return row?.no_restaurant_streak >= 7;
+        const row = db.prepare(`SELECT MAX(no_restaurant_streak) as peak FROM daily_scores`).get() as any;
+        return row?.peak >= 7;
       },
     },
     {
@@ -212,8 +225,8 @@ export function checkAchievements(db: Database): Achievement[] {
       name: "Window Shopper",
       description: "7 days with zero shopping purchases",
       check: () => {
-        const row = db.prepare(`SELECT no_shopping_streak FROM daily_scores ORDER BY date DESC LIMIT 1`).get() as any;
-        return row?.no_shopping_streak >= 7;
+        const row = db.prepare(`SELECT MAX(no_shopping_streak) as peak FROM daily_scores`).get() as any;
+        return row?.peak >= 7;
       },
     },
     {
@@ -221,8 +234,8 @@ export function checkAchievements(db: Database): Achievement[] {
       name: "Detoxed",
       description: "14 days with zero shopping purchases",
       check: () => {
-        const row = db.prepare(`SELECT no_shopping_streak FROM daily_scores ORDER BY date DESC LIMIT 1`).get() as any;
-        return row?.no_shopping_streak >= 14;
+        const row = db.prepare(`SELECT MAX(no_shopping_streak) as peak FROM daily_scores`).get() as any;
+        return row?.peak >= 14;
       },
     },
     {
@@ -328,10 +341,25 @@ export function checkAchievements(db: Database): Achievement[] {
       name: "On Fire",
       description: "Score of 90+ three days in a row",
       check: () => {
+        // Find any three consecutive calendar days (gap <= 1 day) all scoring
+        // 90+. Scan the whole daily_scores table rather than only the last 3
+        // rows so a peak reached inside a backfilled range still unlocks.
         const rows = db.prepare(
-          `SELECT score FROM daily_scores ORDER BY date DESC LIMIT 3`
-        ).all() as { score: number }[];
-        return rows.length >= 3 && rows.every(r => r.score >= 90);
+          `SELECT date, score FROM daily_scores WHERE score >= 90 ORDER BY date ASC`
+        ).all() as { date: string; score: number }[];
+        if (rows.length < 3) return false;
+        for (let i = 2; i < rows.length; i++) {
+          const d0 = Date.parse(rows[i - 2].date);
+          const d1 = Date.parse(rows[i - 1].date);
+          const d2 = Date.parse(rows[i].date);
+          if (
+            Math.round((d1 - d0) / 86400000) === 1 &&
+            Math.round((d2 - d1) / 86400000) === 1
+          ) {
+            return true;
+          }
+        }
+        return false;
       },
     },
     {
@@ -419,13 +447,15 @@ export function getMonthlySavings(db: Database): { saved: number; baselinePace: 
   const daysInBaseline = baselineEnd.getDate();
   const baselineLabel = `${baselineYear}-${String(baselineMonth + 1).padStart(2, "0")}`;
 
-  // Baseline: total discretionary spending
+  // Baseline: total discretionary spending. NULL-safe filter so Apple rows
+  // with no mapped category (Apple "Other" / unmapped) are still counted —
+  // plain `NOT IN` drops NULL rows under SQLite three-valued logic.
   const baselineTotal = db.prepare(
     `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
      WHERE date BETWEEN ? AND ? AND amount > 0
-     AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS',
+     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS',
        'LOAN_PAYMENTS_CAR_PAYMENT', 'LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT',
-       'RENT_AND_UTILITIES', 'RENT_AND_UTILITIES_RENT')`
+       'RENT_AND_UTILITIES', 'RENT_AND_UTILITIES_RENT'))`
   ).get(baselineStart, baselineEndStr) as { total: number };
 
   // Baseline daily pace
@@ -437,9 +467,9 @@ export function getMonthlySavings(db: Database): { saved: number; baselinePace: 
   const currentTotal = db.prepare(
     `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
      WHERE date BETWEEN ? AND ? AND amount > 0
-     AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS',
+     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS',
        'LOAN_PAYMENTS_CAR_PAYMENT', 'LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT',
-       'RENT_AND_UTILITIES', 'RENT_AND_UTILITIES_RENT')`
+       'RENT_AND_UTILITIES', 'RENT_AND_UTILITIES_RENT'))`
   ).get(monthStart, today) as { total: number };
 
   const baselinePaceForDays = baselineDailyPace * dayOfMonth;

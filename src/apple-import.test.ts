@@ -91,12 +91,19 @@ describe("parseAppleCsv", () => {
       `04/13/2026,04/14/2026,"Good row","Poke","Restaurants","Purchase","22.79","Adam"`,
       `not-a-date,04/13/2026,"Bad date","M","Other","Purchase","5.00","Adam"`,
       `04/14/2026,04/14/2026,"Bad amount","M","Other","Purchase","not-a-number","Adam"`,
+      // Partial-match inputs that bare parseFloat would silently accept —
+      // strict parseAmount must reject them so corrupted/hand-edited CSVs
+      // surface a warning instead of importing a truncated value.
+      `04/15/2026,04/15/2026,"Trailing junk","M","Other","Purchase","12.34abc","Adam"`,
+      `04/16/2026,04/16/2026,"Scientific trailing","M","Other","Purchase","1e5x","Adam"`,
     ].join("\n");
     const { rows, warnings } = parseAppleCsv(bad);
     expect(rows).toHaveLength(1);
-    expect(warnings).toHaveLength(2);
+    expect(warnings).toHaveLength(4);
     expect(warnings[0]).toMatch(/unparseable Transaction Date/);
-    expect(warnings[1]).toMatch(/unparseable Amount/);
+    expect(warnings[1]).toMatch(/unparseable Amount "not-a-number"/);
+    expect(warnings[2]).toMatch(/unparseable Amount "12.34abc"/);
+    expect(warnings[3]).toMatch(/unparseable Amount "1e5x"/);
   });
 
   it("converts MM/DD/YYYY to YYYY-MM-DD", () => {
@@ -352,6 +359,54 @@ describe("runAppleImport", () => {
     expect(second.rowsSkipped).toBe(3);
 
     try { unlinkSync(dupPath); } catch {}
+  });
+
+  it("keeps user-applied edits on the right semantic row when Apple refines one row's description", () => {
+    // Regression for F001: two rows share (date, amount, merchant) but differ
+    // on description. Apple retroactively refines one description between
+    // exports. The transaction_id for the unchanged row must remain stable so
+    // user-applied edits (here: a note) stay attached to the correct
+    // semantic event rather than silently migrating to the refined row.
+    const firstPath = writeCsv([
+      VALID_HEADER,
+      `04/10/2026,04/11/2026,"COFFEE","Same Merchant","Restaurants","Purchase","5.00","Adam"`,
+      `04/10/2026,04/11/2026,"TEA","Same Merchant","Restaurants","Purchase","5.00","Adam"`,
+    ]);
+    const db = freshDb();
+    runAppleImport(db, { csvPath: firstPath, balance: 0 });
+
+    // User annotates the TEA row (addressed by transaction_id via the UI path).
+    const teaRowBefore: any = db
+      .prepare(`SELECT transaction_id FROM transactions WHERE name = 'TEA'`)
+      .get();
+    const teaId = teaRowBefore.transaction_id;
+    db.prepare(`UPDATE transactions SET note = ? WHERE transaction_id = ?`).run("user note: oolong", teaId);
+
+    // Apple refines the COFFEE row's description on the next export; TEA is unchanged.
+    const secondPath = writeCsv([
+      VALID_HEADER,
+      `04/10/2026,04/11/2026,"COFFEE - LATTE","Same Merchant","Restaurants","Purchase","5.00","Adam"`,
+      `04/10/2026,04/11/2026,"TEA","Same Merchant","Restaurants","Purchase","5.00","Adam"`,
+    ]);
+    runAppleImport(db, { csvPath: secondPath, balance: 0 });
+
+    // The TEA row the user annotated must still exist with its note intact.
+    const teaAfter: any = db
+      .prepare(`SELECT transaction_id, name, note FROM transactions WHERE transaction_id = ?`)
+      .get(teaId);
+    expect(teaAfter).toBeDefined();
+    expect(teaAfter.name).toBe("TEA");
+    expect(teaAfter.note).toBe("user note: oolong");
+
+    // And the refined COFFEE - LATTE row did not inherit the user's note.
+    const latte: any = db
+      .prepare(`SELECT note FROM transactions WHERE name = 'COFFEE - LATTE'`)
+      .get();
+    expect(latte).toBeDefined();
+    expect(latte.note).toBeNull();
+
+    try { unlinkSync(firstPath); } catch {}
+    try { unlinkSync(secondPath); } catch {}
   });
 
   it("auto-recategorizes freshly imported rows, clearing the stale subcategory", () => {

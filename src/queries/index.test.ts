@@ -505,6 +505,82 @@ describe("getCashFlowThisMonth excludes LOAN_PAYMENTS from income", () => {
   });
 });
 
+// NULL-category spending rows (Apple "Other" and unmapped Apple categories
+// produce category=NULL; plaid/sync.ts also writes NULL when
+// personal_finance_category is missing). SQLite three-valued logic drops
+// NULL rows from `NOT IN (...)` filters — the regression fixed in F032
+// required rewriting those filters to `(category IS NULL OR NOT IN (...))`.
+describe("queries include NULL-category spending rows (F032 regression)", () => {
+  beforeEach(() => {
+    seedAccount(db, { id: "a", type: "depository", balance: 5000 });
+    // Income: one real paycheck
+    seedTransaction(db, { id: "inc", accountId: "a", amount: -2000, date: "2025-01-10", name: "Paycheck", category: "INCOME" });
+    // A normal categorized spend
+    seedTransaction(db, { id: "food", accountId: "a", amount: 50, date: "2025-01-12", name: "Groceries", category: "FOOD_AND_DRINK" });
+    // A transfer we want excluded (the invariant we must preserve)
+    seedTransaction(db, { id: "xfr", accountId: "a", amount: 500, date: "2025-01-13", name: "Transfer Out", category: "TRANSFER_OUT" });
+    // A NULL-category spend (Apple "Other" or unmapped). The whole point of
+    // F032: this row must be counted in every spending total.
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, category, pending) VALUES (?, ?, ?, ?, ?, NULL, 0)`
+    ).run("null-cat", "a", 35, "2025-01-15", "Misc Apple");
+  });
+
+  it("getCashFlow counts NULL-category rows in expenses and excludes TRANSFER_OUT", () => {
+    const cf = getCashFlow(db, "2025-01-01", "2025-01-31");
+    // 50 (food) + 35 (null) — TRANSFER_OUT excluded
+    expect(cf.expenses).toBe(85);
+    expect(cf.income).toBe(2000);
+    expect(cf.net).toBe(1915);
+  });
+
+  it("getCashFlowThisMonth counts NULL-category rows (as long as dates are current)", () => {
+    // Insert a fresh NULL-category row dated today so the "this month" query sees it
+    const d = today();
+    seedAccount(db, { id: "b", type: "depository", balance: 100 });
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, category, pending) VALUES (?, ?, ?, ?, ?, NULL, 0)`
+    ).run("null-today", "b", 12, d, "Null cat today");
+    seedTransaction(db, { id: "food-today", accountId: "b", amount: 20, date: d, name: "Coffee", category: "FOOD_AND_DRINK" });
+
+    const cf = getCashFlowThisMonth(db);
+    // 12 (null) + 20 (food) — both must count
+    expect(cf.expenses).toBeGreaterThanOrEqual(32);
+  });
+
+  it("compareSpending includes NULL-category rows in period totals", () => {
+    const cmp = compareSpending(db, "2024-12-01", "2024-12-31", "2025-01-01", "2025-01-31");
+    // 50 (food) + 35 (null) — TRANSFER_OUT excluded, LOAN_PAYMENTS would be too but there are none
+    expect(cmp.period2Total).toBe(85);
+  });
+
+  // F032 companion invariant: the NULL-inclusion fix is expense-side only.
+  // A NULL-category negative-amount row (amount < 0) is overwhelmingly an
+  // Apple refund or a pre-mapping TRANSFER_IN — NOT real income — so it
+  // must NOT flow into any income aggregate.
+  it("getCashFlow does NOT count NULL-category negative-amount rows as income", () => {
+    // Seed an additional NULL-category refund in the same period as the paycheck
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, category, pending) VALUES (?, ?, ?, ?, ?, NULL, 0)`
+    ).run("null-refund", "a", -45, "2025-01-20", "Apple refund");
+
+    const cf = getCashFlow(db, "2025-01-01", "2025-01-31");
+    // Only the real INCOME row (-2000) counts; -45 NULL row excluded.
+    expect(cf.income).toBe(2000);
+  });
+
+  it("getIncome does NOT count NULL-category negative-amount rows", () => {
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, category, pending) VALUES (?, ?, ?, ?, ?, NULL, 0)`
+    ).run("null-refund", "a", -45, "2025-01-20", "Apple refund");
+
+    const results = getIncome(db, "2025-01-01", "2025-01-31");
+    // Only the Paycheck source appears; no refund/NULL row.
+    expect(results).toHaveLength(1);
+    expect(results[0].total).toBe(2000);
+  });
+});
+
 describe("forecastBalance excludes LOAN_PAYMENTS from inflow", () => {
   it("avgMonthlyInflow excludes LOAN_PAYMENTS and TRANSFER_IN", () => {
     seedAccount(db, { id: "a", type: "depository", balance: 10000 });

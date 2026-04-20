@@ -10,8 +10,17 @@ export interface RecategorizationResult {
 
 // Only known column names are allowed in `match_field` — the value flows into
 // the UPDATE statement via string interpolation (rest of the query is
-// parametrized). Anything else is rejected to prevent SQL injection.
-const ALLOWED_MATCH_FIELDS = ["name", "merchant_name", "category", "subcategory"];
+// parametrized). The map deliberately uses explicit literal SQL column strings
+// rather than passing `rule.match_field` through, so a malformed DB row or a
+// future contributor widening the allowlist cannot introduce SQL injection:
+// the value interpolated into the query is always one of these hand-written
+// string constants. Do NOT add entries that forward arbitrary input.
+const MATCH_FIELD_SQL: Record<string, string> = {
+  name: "name",
+  merchant_name: "merchant_name",
+  category: "category",
+  subcategory: "subcategory",
+} as const;
 
 /**
  * Apply every row in `recategorization_rules` as an UPDATE against
@@ -37,7 +46,8 @@ export function applyRecategorizationRules(db: Database, logger: SyncLogger = co
   let transactionsUpdated = 0;
 
   for (const rule of rules) {
-    if (!ALLOWED_MATCH_FIELDS.includes(rule.match_field)) {
+    const col = MATCH_FIELD_SQL[rule.match_field];
+    if (!col) {
       logger.error(`  Skipping recat rule with invalid match_field: ${rule.match_field}`);
       rulesSkipped++;
       continue;
@@ -63,10 +73,10 @@ export function applyRecategorizationRules(db: Database, logger: SyncLogger = co
     //     src/ai/tools.ts and the AI-tool schema hint.
     const result = rule.target_subcategory
       ? db.prepare(
-          `UPDATE transactions SET category = ?, subcategory = ? WHERE ${rule.match_field} LIKE ? AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)`
+          `UPDATE transactions SET category = ?, subcategory = ? WHERE ${col} LIKE ? AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)`
         ).run(rule.target_category, rule.target_subcategory, rule.match_pattern, rule.target_category, rule.target_subcategory)
       : db.prepare(
-          `UPDATE transactions SET category = ?, subcategory = NULL WHERE ${rule.match_field} LIKE ? AND COALESCE(category, '') != ?`
+          `UPDATE transactions SET category = ?, subcategory = NULL WHERE ${col} LIKE ? AND COALESCE(category, '') != ?`
         ).run(rule.target_category, rule.match_pattern, rule.target_category);
 
     if (result.changes > 0) {

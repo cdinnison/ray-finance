@@ -173,38 +173,55 @@ function parseDate(mdy: string): string | null {
 }
 
 function parseAmount(s: string): number | null {
-  const n = parseFloat(s);
-  return isNaN(n) ? null : n;
+  // Strict parse: reject partial matches like "12.34abc" that parseFloat would
+  // silently accept. Apple's export emits bare numerics; anything else is
+  // malformed and should route to the caller's skip-with-warning path.
+  const cleaned = String(s ?? "").trim();
+  if (!/^-?\d+(\.\d+)?$|^-?\.\d+$/.test(cleaned)) return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
 }
 
-function transactionId(date: string, amount: number, merchant: string, occurrence: number): string {
-  const key = `${date}|${amount}|${merchant}|${occurrence}`;
+function transactionId(
+  date: string,
+  amount: number,
+  merchant: string,
+  description: string,
+  category: string,
+  type: string,
+  occurrence: number
+): string {
+  // All row fields that distinguish Apple transactions are in the key. If
+  // Apple retroactively refines description/category/type, the new row hashes
+  // to a different id — so re-imports don't silently reshuffle occurrence
+  // indices and carry user-applied edits (labels/notes, tied to
+  // transaction_id) onto the wrong semantic row.
+  const key = `${date}|${amount}|${merchant}|${description}|${category}|${type}|${occurrence}`;
   return "apple-" + createHash("sha256").update(key).digest("hex").slice(0, 16);
 }
 
 /**
- * Assigns a stable occurrence index to rows sharing the same (date, amount, merchant).
- * Without this, genuinely separate same-day same-merchant same-amount transactions
- * (e.g. two $2.40 subway swipes) would collapse into one via hash collision.
+ * Assigns a stable occurrence index to rows sharing the same full-content key
+ * (date, amount, merchant, description, category, type). Only rows that tie
+ * on ALL of those fields are genuinely indistinguishable events (e.g. two
+ * $2.40 subway swipes on the same day) and need occurrence disambiguation.
  *
- * Stability requirement: the same CSV exported twice must produce the same indices
- * so re-imports stay idempotent. We sort rows by every field before numbering so
- * the order doesn't depend on Apple's export order.
+ * Stability requirement: the same CSV exported twice must produce the same
+ * indices so re-imports stay idempotent. Sort is restricted to the same
+ * fields that make up the hash key — tiebreakers on other fields would let
+ * mid-stream refinements of unrelated rows silently reshuffle indices.
  */
 function assignOccurrenceIndices(rows: ParsedRow[]): (ParsedRow & { occurrence: number })[] {
   const sorted = [...rows].sort((a, b) => {
     if (a.transactionDate !== b.transactionDate) return a.transactionDate < b.transactionDate ? -1 : 1;
     if (a.amount !== b.amount) return a.amount - b.amount;
     if (a.merchant !== b.merchant) return a.merchant < b.merchant ? -1 : 1;
-    if (a.description !== b.description) return a.description < b.description ? -1 : 1;
-    if (a.category !== b.category) return a.category < b.category ? -1 : 1;
-    if (a.type !== b.type) return a.type < b.type ? -1 : 1;
     return 0;
   });
 
   const counts: Record<string, number> = {};
   return sorted.map(r => {
-    const key = `${r.transactionDate}|${r.amount}|${r.merchant}`;
+    const key = `${r.transactionDate}|${r.amount}|${r.merchant}|${r.description}|${r.category}|${r.type}`;
     const occurrence = counts[key] ?? 0;
     counts[key] = occurrence + 1;
     return { ...r, occurrence };
@@ -341,6 +358,28 @@ export function sumAppleRowsInRange(db: Database, first: string, last: string): 
   return r.total;
 }
 
+/**
+ * Split the `amount` column of Apple Card rows in a date range into positives
+ * (purchases) and absolute-value negatives (payments/credits). The legacy
+ * `sumAppleRowsInRange` returns the *net* of both, which can be near-zero or
+ * negative when a typical month contains both purchases and a payment — a
+ * misleading number for a "rows you're about to delete" prompt. This returns
+ * gross dollars moved on each side so the confirmation can display both.
+ * sumAppleRowsInRange is left exported for any other callers that depend on
+ * the net.
+ */
+export function splitAppleRowsInRange(db: Database, first: string, last: string): { purchases: number; payments: number } {
+  const r = db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS purchases,
+         COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) AS payments
+       FROM transactions WHERE account_id = ? AND date BETWEEN ? AND ?`
+    )
+    .get(ACCOUNT_ID, first, last) as { purchases: number; payments: number };
+  return { purchases: r.purchases, payments: r.payments };
+}
+
 /** Run the import end-to-end. Returns a result struct for the CLI layer to format. */
 export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImportResult {
   const { rows, warnings, replaceWindow } =
@@ -381,7 +420,15 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
       const indexed = assignOccurrenceIndices(rows);
       wouldInsert = 0;
       for (const row of indexed) {
-        const id = transactionId(row.transactionDate, row.amount, row.merchant, row.occurrence);
+        const id = transactionId(
+          row.transactionDate,
+          row.amount,
+          row.merchant,
+          row.description,
+          row.category,
+          row.type,
+          row.occurrence
+        );
         if (exists.get(id)) wouldSkip++;
         else wouldInsert++;
       }
@@ -487,7 +534,15 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
     const indexed = assignOccurrenceIndices(rows);
     for (const row of indexed) {
       const mapping = mapCategory(row.category);
-      const id = transactionId(row.transactionDate, row.amount, row.merchant, row.occurrence);
+      const id = transactionId(
+        row.transactionDate,
+        row.amount,
+        row.merchant,
+        row.description,
+        row.category,
+        row.type,
+        row.occurrence
+      );
       const label = TYPE_LABELS[row.type] ?? null;
       const info = insertTx.run(
         id,

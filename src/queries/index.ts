@@ -172,6 +172,14 @@ export function getCashFlowThisMonth(db: Database): { income: number; expenses: 
     .slice(0, 10);
   const today = now.toISOString().slice(0, 10);
 
+  // Expense-side NULL-category filter (Apple imports write NULL for "Other"
+  // and any unmapped category — see apple-import.ts CATEGORY_MAP). Plain
+  // `NOT IN` drops NULL rows under SQLite three-valued logic, silently
+  // understating expense totals. We deliberately do NOT apply the same
+  // treatment to the income side (amount < 0): a NULL-category negative
+  // amount is overwhelmingly an Apple Card refund or a pre-mapping
+  // TRANSFER_IN, neither of which is income. Old `NOT IN` behavior is
+  // correct there.
   const income = db
     .prepare(
       `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
@@ -184,7 +192,7 @@ export function getCashFlowThisMonth(db: Database): { income: number; expenses: 
     .prepare(
       `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
        WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-       AND category NOT IN ('TRANSFER_OUT')`
+       AND (category IS NULL OR category NOT IN ('TRANSFER_OUT'))`
     )
     .get(monthStart, today) as { total: number };
 
@@ -205,7 +213,7 @@ export function getRecentSpending(db: Database): { category: string; total: numb
     .prepare(
       `SELECT category, SUM(amount) as total FROM transactions
        WHERE amount > 0 AND date IN (?, ?)
-       AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS', 'LOAN_PAYMENTS_CAR_PAYMENT', 'LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT')
+       AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS', 'LOAN_PAYMENTS_CAR_PAYMENT', 'LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT'))
        GROUP BY category ORDER BY total DESC`
     )
     .all(yesterday, today) as any[];
@@ -224,7 +232,7 @@ export function getRecentTransactions(
     .prepare(
       `SELECT name, amount, category, date, pending FROM transactions
        WHERE amount > 0 AND date IN (?, ?)
-       AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS', 'LOAN_PAYMENTS_CAR_PAYMENT', 'LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT', 'RENT_AND_UTILITIES_RENT')
+       AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS', 'LOAN_PAYMENTS_CAR_PAYMENT', 'LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT', 'RENT_AND_UTILITIES_RENT'))
        ORDER BY amount DESC LIMIT ?`
     )
     .all(yesterday, today, limit) as any[];
@@ -277,6 +285,9 @@ export function getTransactionsFiltered(
 // --- Income ---
 
 export function getIncome(db: Database, startDate: string, endDate: string): { source: string; total: number; count: number }[] {
+  // Income side uses plain `NOT IN` (excludes NULL-category rows). NULL +
+  // amount < 0 is overwhelmingly an Apple refund or a pre-mapping
+  // TRANSFER_IN, not real income — see the comment in getCashFlowThisMonth.
   return db.prepare(
     `SELECT COALESCE(merchant_name, name) as source, SUM(ABS(amount)) as total, COUNT(*) as count
      FROM transactions
@@ -303,6 +314,11 @@ export function getCashFlow(db: Database, startDate: string, endDate: string): {
   income: number; expenses: number; net: number; savingsRate: number;
   monthly: { month: string; income: number; expenses: number; net: number }[];
 } {
+  // Income uses plain `NOT IN` (excludes NULL-category rows) — NULL +
+  // amount < 0 is overwhelmingly an Apple refund or a pre-mapping
+  // TRANSFER_IN, not real income. Expenses use NULL-inclusive because
+  // Apple "Other"/unmapped rows (amount > 0) are genuinely spend we'd
+  // otherwise silently drop.
   const income = db.prepare(
     `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
      WHERE amount < 0 AND date BETWEEN ? AND ? AND pending = 0
@@ -312,17 +328,17 @@ export function getCashFlow(db: Database, startDate: string, endDate: string): {
   const expenses = db.prepare(
     `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
      WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-     AND category NOT IN ('TRANSFER_OUT')`
+     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT'))`
   ).get(startDate, endDate) as { total: number };
 
   const net = income.total - expenses.total;
   const savingsRate = income.total > 0 ? (net / income.total) * 100 : 0;
 
-  // Monthly breakdown
+  // Monthly breakdown: same income/expense asymmetry as above.
   const rows = db.prepare(
     `SELECT strftime('%Y-%m', date) as month,
        SUM(CASE WHEN amount < 0 AND category NOT IN (${INCOME_EXCLUDED_SQL}) THEN ABS(amount) ELSE 0 END) as income,
-       SUM(CASE WHEN amount > 0 AND category NOT IN ('TRANSFER_OUT') THEN amount ELSE 0 END) as expenses
+       SUM(CASE WHEN amount > 0 AND (category IS NULL OR category NOT IN ('TRANSFER_OUT')) THEN amount ELSE 0 END) as expenses
      FROM transactions
      WHERE date BETWEEN ? AND ? AND pending = 0
      GROUP BY month ORDER BY month`
@@ -365,6 +381,8 @@ export function forecastBalance(db: Database, accountId?: string, months = 6): {
     flowParams.push(accountId);
   }
 
+  // Inflow uses plain `NOT IN` — a NULL-category negative amount is almost
+  // always a refund or pre-mapping TRANSFER_IN, not real inflow.
   const inflow = db.prepare(
     `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
      WHERE amount < 0 AND date BETWEEN ? AND ? AND pending = 0
@@ -556,7 +574,7 @@ export function compareSpending(db: Database, period1Start: string, period1End: 
     return db.prepare(
       `SELECT category, SUM(amount) as total FROM transactions
        WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-       AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')
+       AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))
        GROUP BY category`
     ).all(start, end) as { category: string; total: number }[];
   };

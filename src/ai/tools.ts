@@ -370,7 +370,7 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       const rows = db.prepare(
         `SELECT category, SUM(amount) as total, COUNT(*) as count FROM transactions
          WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-         AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')
+         AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))
          GROUP BY category ORDER BY total DESC`
       ).all(start, end) as { category: string; total: number; count: number }[];
       if (rows.length === 0) return "No spending found for that period.";

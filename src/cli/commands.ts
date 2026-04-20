@@ -18,7 +18,7 @@ import {
   getAppleAccountBalance,
   getAppleAccountLimit,
   countAppleRowsInRange,
-  sumAppleRowsInRange,
+  splitAppleRowsInRange,
   parseAppleCsv,
 } from "../apple-import.js";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
@@ -149,13 +149,17 @@ export async function runLink(): Promise<void> {
 
 export async function showAccounts(): Promise<void> {
   const db = getDb();
+  // Least-exposure: derive `is_manual` in SQL via the `access_token = 'manual'`
+  // sentinel instead of hydrating the (encrypted) Plaid access token into JS
+  // memory. Label derivation downstream reads is_manual, never the token.
   const institutions = db.prepare(
-    `SELECT i.name as institution, i.item_id, i.created_at, i.logo, i.primary_color, i.access_token,
+    `SELECT i.name as institution, i.item_id, i.created_at, i.logo, i.primary_color,
+            CASE WHEN i.access_token = 'manual' THEN 1 ELSE 0 END AS is_manual,
             a.name, a.type, a.subtype, a.mask, a.current_balance, a.currency
      FROM institutions i
      LEFT JOIN accounts a ON a.item_id = i.item_id AND a.hidden = 0
      ORDER BY i.created_at, a.type, a.current_balance DESC`
-  ).all() as { institution: string; item_id: string; created_at: string; logo: string | null; primary_color: string | null; access_token: string; name: string | null; type: string | null; subtype: string | null; mask: string | null; current_balance: number | null; currency: string | null }[];
+  ).all() as { institution: string; item_id: string; created_at: string; logo: string | null; primary_color: string | null; is_manual: number; name: string | null; type: string | null; subtype: string | null; mask: string | null; current_balance: number | null; currency: string | null }[];
 
   if (institutions.length === 0) {
     console.log("\nNo accounts yet. Run 'ray link', 'ray add', or 'ray import-apple' to get started.\n");
@@ -185,7 +189,7 @@ export async function showAccounts(): Promise<void> {
       const logo = await renderLogo(first.logo);
       if (logo) logoStr = logo.replace(/\n/g, "") + " ";
     }
-    const manualLabel = first.item_id === "manual-apple" ? dim(" (manual)") : "";
+    const manualLabel = first.is_manual === 1 ? dim(" (manual)") : "";
     console.log(`${logoStr}${institutionName(first.institution, first.primary_color)}${manualLabel}`);
 
     for (const row of rows) {
@@ -298,7 +302,7 @@ export async function showSpending(period = "this_month"): Promise<void> {
   const rows = db.prepare(
     `SELECT category, SUM(amount) as total, COUNT(*) as count FROM transactions
      WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-     AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')
+     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))
      GROUP BY category ORDER BY total DESC`
   ).all(start, end) as { category: string; total: number; count: number }[];
 
@@ -486,11 +490,16 @@ export async function runRemove(): Promise<void> {
 
   // Institutions (Plaid-linked and non-property manual, e.g. Apple Card).
   // Excludes manual-assets, whose accounts are surfaced per-account below.
+  // Least-exposure: derive `is_manual` in SQL instead of hydrating the
+  // encrypted Plaid access token into JS memory — runRemove only needs the
+  // manual/linked boolean for the listing label.
   const institutions = db.prepare(
-    `SELECT item_id, name, access_token FROM institutions WHERE item_id != 'manual-assets' ORDER BY created_at`
-  ).all() as { item_id: string; name: string; access_token: string }[];
+    `SELECT item_id, name,
+            CASE WHEN access_token = 'manual' THEN 1 ELSE 0 END AS is_manual
+     FROM institutions WHERE item_id != 'manual-assets' ORDER BY created_at`
+  ).all() as { item_id: string; name: string; is_manual: number }[];
   for (const inst of institutions) {
-    entries.push({ kind: "institution", item_id: inst.item_id, name: inst.name, manual: inst.access_token === "manual" });
+    entries.push({ kind: "institution", item_id: inst.item_id, name: inst.name, manual: inst.is_manual === 1 });
   }
 
   // Manual accounts
@@ -618,14 +627,17 @@ export function showRecap(period = "last_month"): void {
     prevEnd = new Date(y, m - 1, 0).toISOString().slice(0, 10);
   }
 
-  // Spending this period
+  // Spending this period. NULL-safe category filter (see apple-import.ts for
+  // the NULL-category rows this must include in the total).
   const spending = db.prepare(
     `SELECT SUM(amount) as total, COUNT(*) as count FROM transactions
      WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-     AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')`
+     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))`
   ).get(start, end) as { total: number | null; count: number };
 
-  // Income this period
+  // Income this period. Plain `NOT IN` (NULL-excluding) is the right choice
+  // on the income side: a NULL-category negative amount is almost always an
+  // Apple refund or a pre-mapping TRANSFER_IN, not real income.
   const income = db.prepare(
     `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
      WHERE amount < 0 AND date BETWEEN ? AND ? AND pending = 0
@@ -674,7 +686,7 @@ export function showRecap(period = "last_month"): void {
   const topCats = db.prepare(
     `SELECT category, SUM(amount) as total FROM transactions
      WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-     AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')
+     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))
      GROUP BY category ORDER BY total DESC LIMIT 5`
   ).all(start, end) as { category: string; total: number }[];
 
@@ -755,7 +767,7 @@ export async function runImportApple(
         for (const w of warnings) console.error(dim("    " + w));
       } else {
         console.error(chalk.red("  CSV had a valid header but no data rows."));
-        console.error(dim("    Re-export from Apple Wallet with a date range that has activity."));
+        console.error(dim("    Export from https://card.apple.com/ (the web portal, not the Wallet app)."));
       }
       process.exit(1);
     }
@@ -876,7 +888,11 @@ export async function runImportApple(
   if (opts.replaceRange && !opts.dryRun) {
     const existing = countAppleRowsInRange(db, parsePreview.replaceFirst, parsePreview.replaceLast);
     if (existing > 0) {
-      const total = sumAppleRowsInRange(db, parsePreview.replaceFirst, parsePreview.replaceLast);
+      // Show gross purchases vs payments rather than the net: a typical
+      // month containing both purchases and a card payment can net to ~$0
+      // or even negative, which misrepresents the volume the user is about
+      // to delete.
+      const { purchases, payments } = splitAppleRowsInRange(db, parsePreview.replaceFirst, parsePreview.replaceLast);
       if (!process.stdin.isTTY && !opts.yes) {
         // Non-TTY (scripted / CI / piped) must never block on inquirer.
         // Row count and date range are already in the summary above, so the
@@ -888,7 +904,7 @@ export async function runImportApple(
         const { confirm } = await inquirer.prompt([{theme,
           type: "confirm",
           name: "confirm",
-          message: `Delete ${chalk.bold(String(existing))} existing Apple Card rows (${total < 0 ? "-" : ""}${rawFormatMoney(total)}) in range ${parsePreview.replaceFirst} → ${parsePreview.replaceLast}?`,
+          message: `Delete ${chalk.bold(String(existing))} existing Apple Card rows in range ${parsePreview.replaceFirst} → ${parsePreview.replaceLast}?\n  Purchases: ${rawFormatMoney(purchases)}\n  Payments:  ${rawFormatMoney(payments)}`,
           default: false,
         }]);
         if (!confirm) {
@@ -900,8 +916,19 @@ export async function runImportApple(
   }
 
   // --- Run ---
+  // Recat + snapshot + daily-score backfill all happen inside the spinner's
+  // scope so a multi-month import doesn't appear to hang after "Importing..."
+  // ticks — backfill alone can take ~2s on a 6-month CSV. The spinner's
+  // succeed message reports the scored-day count so the user still sees
+  // concrete feedback. Recat output is buffered and flushed below under its
+  // own heading only when rules actually updated rows.
   const spinner = ora(opts.dryRun ? "Previewing import..." : "Importing...").start();
   let result;
+  const recatBuf: string[] = [];
+  let recat: { rulesEvaluated: number; rulesSkipped: number; transactionsUpdated: number } | null = null;
+  let daysScored = 0;
+  let scoredRange: { start: string; end: string } | null = null;
+  let netWorthSnapshot: number | null = null;
   try {
     result = runAppleImport(db, {
       csvPath,
@@ -911,10 +938,63 @@ export async function runImportApple(
       dryRun: opts.dryRun,
       preParsed: parsed,
     });
-    // Fire the tick immediately on successful import; the detailed output
-    // (warnings, summary, recat, scoring, achievements) prints below under
-    // its own headings and doesn't need the spinner's ornament trailing it.
-    spinner.succeed(opts.dryRun ? "Preview complete." : "Import complete.");
+
+    // Run the same post-ingest derivation ray sync runs — recategorization +
+    // daily score + achievement checks — so Apple-only users (no Plaid
+    // institutions) don't get an empty daily_scores table forever, and
+    // `ray status` / `ray score` have a fresh row to show. Skipped on dry-run.
+    // Recat runs BEFORE backfill so daily_scores reflects recat'd categories.
+    if (!opts.dryRun) {
+      const bufLogger = { log: (m: string) => recatBuf.push(m), error: (m: string) => console.error(m) };
+      recat = applyRecategorizationRules(db, bufLogger);
+
+      if (result.dateRange) {
+        // Snapshot net worth so Apple-only users (no Plaid institutions, never
+        // run `ray sync`) still get net_worth_history rows — otherwise the
+        // "from yesterday" delta and net-worth trend queries stay empty/stale.
+        const { netWorth: nw } = snapshotNetWorth(db);
+        netWorthSnapshot = nw;
+
+        const backfillWindow = getImportAppleBackfillWindow(result, opts);
+
+        // Backfill daily scores across the imported date range so streaks
+        // accumulate properly (each day reads the prior day's daily_scores row)
+        // and streak-based achievements (Kitchen Hero, Detoxed, etc.) can unlock.
+        // daily_scores has date-PK UPSERT, so re-scoring dates that already have
+        // rows is idempotent. Performance: ~5 queries per day, acceptable for
+        // typical CSV ranges (a 6-month backfill is ~900 queries, ~2s).
+        // Always score through yesterday — not just through dateRange.last —
+        // because (a) the "fresh score row" users see must reflect today's
+        // knowledge, and (b) calculateDailyScore chains streaks off the prior
+        // day's daily_scores row, so any retroactive import requires re-scoring
+        // every subsequent day to rebuild the streak chain. Under
+        // `--replace-range`, rescore from the full deleted window rather than
+        // only from the first successfully imported row, or stale daily_scores
+        // can survive for boundary dates that were deleted due to malformed rows.
+        if (backfillWindow) {
+          const { start, end } = backfillWindow;
+          spinner.text = `Backfilling daily scores (${start} \u2192 ${end})...`;
+          let d = start;
+          while (d <= end) {
+            calculateDailyScore(db, d);
+            daysScored++;
+            const [y, mo, dy] = d.split("-").map(Number);
+            const next = new Date(Date.UTC(y, mo - 1, dy + 1));
+            d = next.toISOString().slice(0, 10);
+          }
+          scoredRange = { start, end };
+        }
+      }
+    }
+
+    // Incorporate the scored-day count into the succeed message so a long
+    // backfill can't feel like a silent stall.
+    const succeedMsg = opts.dryRun
+      ? "Preview complete."
+      : daysScored > 0
+        ? `Import complete. ${chalk.dim(`(${daysScored} day${daysScored === 1 ? "" : "s"} scored)`)}`
+        : "Import complete.";
+    spinner.succeed(succeedMsg);
   } catch (err: any) {
     spinner.fail(formatError(err, "Import failed"));
     process.exit(1);
@@ -978,63 +1058,28 @@ export async function runImportApple(
     }
   }
 
-  // Run the same post-ingest derivation ray sync runs — recategorization +
-  // daily score + achievement checks — so Apple-only users (no Plaid
-  // institutions) don't get an empty daily_scores table forever, and
-  // `ray status` / `ray score` have a fresh row to show. Skipped on dry-run.
+  // --- Recategorization (post-succeed, buffered for a clean heading) ---
+  // Flush the buffered per-rule lines under a Recategorization heading only
+  // when rules actually updated rows. Keeping the heading gated prevents an
+  // empty-heading eyesore on imports that didn't trip any rules. Dry-run
+  // never prints the heading because recat is skipped under --dry-run.
+  if (!opts.dryRun && recat && recat.transactionsUpdated > 0) {
+    console.log(`\n${heading("Recategorization")}`);
+    for (const line of recatBuf) console.log(line);
+  }
+
+  // --- Scoring + achievements (outputs that come after the summary) ---
   if (!opts.dryRun) {
-    const recat = applyRecategorizationRules(db);
-    if (recat.transactionsUpdated > 0) {
-      console.log("");
+    if (netWorthSnapshot !== null) {
+      console.log(dim(`  Net worth snapshot: $${netWorthSnapshot.toLocaleString()}`));
     }
-
-    if (result.dateRange) {
-      // Snapshot net worth so Apple-only users (no Plaid institutions, never
-      // run `ray sync`) still get net_worth_history rows — otherwise the
-      // "from yesterday" delta and net-worth trend queries stay empty/stale.
-      const { netWorth: nw } = snapshotNetWorth(db);
-      console.log(dim(`  Net worth snapshot: $${nw.toLocaleString()}`));
-
-      const backfillWindow = getImportAppleBackfillWindow(result, opts);
-
-      // Backfill daily scores across the imported date range so streaks
-      // accumulate properly (each day reads the prior day's daily_scores row)
-      // and streak-based achievements (Kitchen Hero, Detoxed, etc.) can unlock.
-      // daily_scores has date-PK UPSERT, so re-scoring dates that already have
-      // rows is idempotent. Performance: ~5 queries per day, acceptable for
-      // typical CSV ranges (a 6-month backfill is ~900 queries, ~2s).
-      // Always score through yesterday — not just through dateRange.last —
-      // because (a) the "fresh score row" users see must reflect today's
-      // knowledge, and (b) calculateDailyScore chains streaks off the prior
-      // day's daily_scores row, so any retroactive import requires re-scoring
-      // every subsequent day to rebuild the streak chain. Under
-      // `--replace-range`, rescore from the full deleted window rather than
-      // only from the first successfully imported row, or stale daily_scores
-      // can survive for boundary dates that were deleted due to malformed rows.
-      if (backfillWindow) {
-        const { start, end } = backfillWindow;
-        const dayCount = Math.round((Date.parse(end) - Date.parse(start)) / 86400000) + 1;
-        if (dayCount > 1) {
-          console.log(dim(`    Backfilling daily scores for ${dayCount} day${dayCount === 1 ? '' : 's'} (${start} → ${end})...`));
-        }
-        let d = start;
-        let daysScored = 0;
-        while (d <= end) {
-          calculateDailyScore(db, d);
-          daysScored++;
-          const [y, mo, dy] = d.split("-").map(Number);
-          const next = new Date(Date.UTC(y, mo - 1, dy + 1));
-          d = next.toISOString().slice(0, 10);
-        }
-        if (daysScored > 0) {
-          console.log(dim(`  Scored ${daysScored} day(s), ${start} \u2192 ${end}`));
-        }
-      }
+    if (scoredRange && daysScored > 0) {
+      console.log(dim(`  Scored ${daysScored} day(s), ${scoredRange.start} \u2192 ${scoredRange.end}`));
     }
 
     const newAchievements = checkAchievements(db);
     for (const a of newAchievements) {
-      console.log(`    🏆 ${chalk.bold(a.name)} — ${a.description}`);
+      console.log(`    \u{1F3C6} ${chalk.bold(a.name)} \u2014 ${a.description}`);
     }
   }
 
