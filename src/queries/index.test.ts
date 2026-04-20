@@ -214,6 +214,10 @@ describe("getCashFlowThisMonth", () => {
     seedAccount(db, { id: "a", type: "depository", balance: 5000 });
     seedTransaction(db, { id: "t1", accountId: "a", amount: -500, date: today(), name: "Transfer", category: "TRANSFER_IN" });
     seedTransaction(db, { id: "t2", accountId: "a", amount: 500, date: today(), name: "Transfer", category: "TRANSFER_OUT" });
+    // Apple Daily Cash clawback: Debit rows map to TRANSFER_IN with amount > 0.
+    // These are cash-reward corrections, not real spending — must be excluded
+    // from expense totals per apple-import.ts:91-94 contract.
+    seedTransaction(db, { id: "t3", accountId: "a", amount: 1.23, date: today(), name: "Apple Daily Cash clawback", category: "TRANSFER_IN" });
 
     const cf = getCashFlowThisMonth(db);
     expect(cf.income).toBe(0);
@@ -441,6 +445,20 @@ describe("getCashFlow", () => {
     expect(cf.net).toBe(3000);
     expect(cf.savingsRate).toBe(60);
     expect(cf.monthly.length).toBe(1);
+  });
+
+  it("excludes positive-amount TRANSFER_IN (Apple Debit clawback) from expenses", () => {
+    // Apple Daily Cash clawback: Debit rows map to TRANSFER_IN with amount > 0.
+    // Must be excluded from both the main expenses aggregate and the monthly
+    // CASE expression per apple-import.ts:91-94 contract.
+    seedAccount(db, { id: "a", type: "depository", balance: 5000 });
+    seedTransaction(db, { id: "t1", accountId: "a", amount: -5000, date: "2025-01-15", name: "Salary", category: "INCOME" });
+    seedTransaction(db, { id: "t2", accountId: "a", amount: 2000, date: "2025-01-20", name: "Rent", category: "RENT_AND_UTILITIES" });
+    seedTransaction(db, { id: "t3", accountId: "a", amount: 1.23, date: "2025-01-22", name: "Apple clawback", category: "TRANSFER_IN" });
+
+    const cf = getCashFlow(db, "2025-01-01", "2025-01-31");
+    expect(cf.expenses).toBe(2000); // clawback excluded
+    expect(cf.monthly[0].expenses).toBe(2000); // monthly CASE must agree
   });
 });
 

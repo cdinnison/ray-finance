@@ -192,7 +192,7 @@ export function getCashFlowThisMonth(db: Database): { income: number; expenses: 
     .prepare(
       `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
        WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-       AND (category IS NULL OR category NOT IN ('TRANSFER_OUT'))`
+       AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN'))`
     )
     .get(monthStart, today) as { total: number };
 
@@ -328,7 +328,7 @@ export function getCashFlow(db: Database, startDate: string, endDate: string): {
   const expenses = db.prepare(
     `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
      WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT'))`
+     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN'))`
   ).get(startDate, endDate) as { total: number };
 
   const net = income.total - expenses.total;
@@ -338,7 +338,7 @@ export function getCashFlow(db: Database, startDate: string, endDate: string): {
   const rows = db.prepare(
     `SELECT strftime('%Y-%m', date) as month,
        SUM(CASE WHEN amount < 0 AND category NOT IN (${INCOME_EXCLUDED_SQL}) THEN ABS(amount) ELSE 0 END) as income,
-       SUM(CASE WHEN amount > 0 AND (category IS NULL OR category NOT IN ('TRANSFER_OUT')) THEN amount ELSE 0 END) as expenses
+       SUM(CASE WHEN amount > 0 AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN')) THEN amount ELSE 0 END) as expenses
      FROM transactions
      WHERE date BETWEEN ? AND ? AND pending = 0
      GROUP BY month ORDER BY month`
@@ -574,7 +574,7 @@ export function compareSpending(db: Database, period1Start: string, period1End: 
     return db.prepare(
       `SELECT category, SUM(amount) as total FROM transactions
        WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-       AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))
+       AND category IS NOT NULL AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')
        GROUP BY category`
     ).all(start, end) as { category: string; total: number }[];
   };

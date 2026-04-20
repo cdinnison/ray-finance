@@ -28,6 +28,25 @@ import { heading, progressBar, formatMoney, formatMoneyColored, padColumns, dim,
 import { getUpcomingBills } from "../db/bills.js";
 
 /**
+ * Shared strict money parser used by BOTH the exit-on-error CLI-flag wrapper
+ * (`parseMoneyStrict`) and inquirer prompt validators. Returns the parsed
+ * number on success and `null` on any non-numeric input. Accepts `$` and `,`
+ * as purely cosmetic (e.g. "$1,200.50") and supports an optional leading `-`
+ * so negative amounts survive if a caller ever allows them. A bare empty
+ * string after stripping whitespace is treated as "absent" and returns null;
+ * callers (e.g. the prompt validators) decide whether empty means "skip" or
+ * "error".
+ */
+export function tryParseMoney(v: string): number | null {
+  const cleaned = String(v ?? "").replace(/[$,]/g, "").trim();
+  if (cleaned === "") return null;
+  // Require pure numeric (optional leading `-`, optional single decimal point).
+  if (!/^-?\d+(\.\d+)?$|^-?\.\d+$/.test(cleaned)) return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Strict money parser for CLI flags. Returns `undefined` only when the flag is
  * truly absent or an empty string — any other non-numeric input is a hard
  * error so that `--balance=123abc` fails fast instead of silently parsing to
@@ -48,11 +67,8 @@ export function parseMoneyStrict(
   exitOnError = true
 ): number | undefined | null {
   if (v === undefined || v === "") return undefined;
-  const cleaned = String(v).replace(/[$,]/g, "").trim();
-  // Require pure numeric (optional leading `-`, optional single decimal point).
-  const numeric = /^-?\d+(\.\d+)?$|^-?\.\d+$/.test(cleaned);
-  const n = numeric ? Number(cleaned) : NaN;
-  if (!numeric || !Number.isFinite(n)) {
+  const n = tryParseMoney(v);
+  if (n === null) {
     console.error(chalk.red(`Error: --${flagName} must be a number (got "${v}")`));
     if (exitOnError) process.exit(1);
     return null;
@@ -82,16 +98,21 @@ export async function runSync(): Promise<void> {
   const ora = (await import("ora")).default;
   const spinner = ora("Syncing transactions...").start();
   const startTime = Date.now();
+  // Split so a post-sync failure never masquerades as a sync failure: the
+  // sync itself is a single atomic unit, and post-sync side-effects (if any
+  // were added) should degrade gracefully rather than fail the whole command.
+  let result;
   try {
     const db = getDb();
-    const result = await runDailySync(db);
-    const elapsed = formatDuration(Date.now() - startTime);
-    const parts = [elapsed];
-    if (result.transactionsAdded > 0) parts.push(`${result.transactionsAdded} new transactions`);
-    spinner.succeed(`Sync complete. ${chalk.dim(`(${parts.join(", ")})`)}`);
+    result = await runDailySync(db);
   } catch (err: any) {
     spinner.fail(formatError(err, "Sync failed"));
+    process.exit(1);
   }
+  const elapsed = formatDuration(Date.now() - startTime);
+  const parts = [elapsed];
+  if (result.transactionsAdded > 0) parts.push(`${result.transactionsAdded} new transactions`);
+  spinner.succeed(`Sync complete. ${chalk.dim(`(${parts.join(", ")})`)}`);
 }
 
 export async function runLink(): Promise<void> {
@@ -468,11 +489,10 @@ export async function runAdd(): Promise<void> {
       name: "balance",
       message: "Current value ($)",
       validate: (v: string) => {
-        const n = parseFloat(v.replace(/[$,]/g, ""));
-        return isNaN(n) ? "Enter a number" : true;
+        return tryParseMoney(v) === null ? "Enter a number" : true;
       },
     }]);
-    finalBalance = parseFloat(balance.replace(/[$,]/g, ""));
+    finalBalance = tryParseMoney(balance) ?? 0;
   }
 
   addManualAccount(db, name.trim(), type, finalBalance, listingUrl);
@@ -535,11 +555,14 @@ export async function runRemove(): Promise<void> {
   if (isNaN(idx) || idx < 0 || idx >= entries.length) return;
 
   const entry = entries[idx];
+  let removedAccountIds: string[] = [];
   if (entry.kind === "manual") {
+    removedAccountIds = [entry.account_id];
     removeManualAccount(db, entry.account_id);
   } else {
     // Remove all data for this institution
     const accounts = db.prepare(`SELECT account_id FROM accounts WHERE item_id = ?`).all(entry.item_id) as { account_id: string }[];
+    removedAccountIds = accounts.map(a => a.account_id);
     for (const acct of accounts) {
       db.prepare(`DELETE FROM transactions WHERE account_id = ?`).run(acct.account_id);
       db.prepare(`DELETE FROM holdings WHERE account_id = ?`).run(acct.account_id);
@@ -550,8 +573,41 @@ export async function runRemove(): Promise<void> {
     db.prepare(`DELETE FROM accounts WHERE item_id = ?`).run(entry.item_id);
     db.prepare(`DELETE FROM institutions WHERE item_id = ?`).run(entry.item_id);
   }
+  // Refresh derived state so daily_scores and net_worth_history aren't left
+  // referencing rows we just deleted. Covers both removal paths (Plaid
+  // institution and manual asset) because either can move net worth or shift
+  // historical spending that participated in daily-score calculations.
+  cleanupDerivedAfterRemove(db, removedAccountIds);
   console.log(chalk.green(`\n  Removed ${entry.name}.`));
   console.log();
+}
+
+/**
+ * After an account is removed, daily_scores rows and the latest
+ * net_worth_history row may still reference transactions / balances that no
+ * longer exist. Rescore the last ~90 days (so streak chains covering the
+ * recent window are recomputed) and take a fresh net-worth snapshot.
+ * `removedAccountIds` is reserved for future per-account rescoping — today
+ * calculateDailyScore reads the full transactions table, so we simply
+ * re-score the window.
+ */
+export function cleanupDerivedAfterRemove(db: ReturnType<typeof getDb>, _removedAccountIds: string[]): void {
+  const now = new Date();
+  // 90 days covers the typical streak/score-window span without blowing up
+  // on very old data.
+  const start = new Date(now.getTime() - 90 * 86400000);
+  const endStr = now.toISOString().slice(0, 10);
+  let d = start.toISOString().slice(0, 10);
+  const work = db.transaction(() => {
+    while (d <= endStr) {
+      calculateDailyScore(db, d);
+      const [y, mo, dy] = d.split("-").map(Number);
+      const next = new Date(Date.UTC(y, mo - 1, dy + 1));
+      d = next.toISOString().slice(0, 10);
+    }
+    snapshotNetWorth(db);
+  });
+  work();
 }
 
 export function showAlerts(): void {
@@ -801,16 +857,11 @@ export async function runImportApple(
   console.log("");
 
   // --- Balance ---
-  // Used only for inquirer answers — those are already gated by `validate` so
-  // we can fall back to `undefined` on a bad parse without masking CLI-flag
-  // typos. CLI flags go through `parseMoneyStrict` (which hard-exits on junk
-  // like `--balance 123abc` instead of silently discarding the tail).
-  const parseMoneyLoose = (v: string | undefined): number | undefined => {
-    if (v === undefined || v === "") return undefined;
-    const n = parseFloat(String(v).replace(/[$,]/g, ""));
-    return isNaN(n) ? undefined : n;
-  };
-
+  // CLI flags go through `parseMoneyStrict` (which hard-exits on junk like
+  // `--balance 123abc` instead of silently discarding the tail). Prompt
+  // answers share the same strict parser via `tryParseMoney`, which is also
+  // what the `validate` hook uses — so a value that passes `validate` is
+  // guaranteed to parse non-null here.
   let balance = parseMoneyStrict("balance", opts.balance) as number | undefined;
   // Dry-run skips prompts but the real import will require a balance on first
   // run — surface that now so the preview isn't misleading.
@@ -847,11 +898,12 @@ export async function runImportApple(
         default: existingBalance != null ? String(existingBalance) : undefined,
         validate: (v: string) => {
           if (v.trim() === "") return existed ? true : "Required — enter your current balance";
-          const n = parseFloat(v.replace(/[$,]/g, ""));
-          return isNaN(n) ? (existed ? "Enter a number or leave blank" : "Enter a number") : true;
+          return tryParseMoney(v) === null
+            ? (existed ? "Enter a number or leave blank" : "Enter a number")
+            : true;
         },
       }]);
-      balance = parseMoneyLoose(answer);
+      balance = answer.trim() === "" ? undefined : (tryParseMoney(answer) ?? undefined);
     }
   }
 
@@ -876,11 +928,10 @@ export async function runImportApple(
         default: existingLimit != null ? String(existingLimit) : undefined,
         validate: (v: string) => {
           if (v.trim() === "") return true;
-          const n = parseFloat(v.replace(/[$,]/g, ""));
-          return isNaN(n) ? "Enter a number or leave blank" : true;
+          return tryParseMoney(v) === null ? "Enter a number or leave blank" : true;
         },
       }]);
-      limit = parseMoneyLoose(answer);
+      limit = answer.trim() === "" ? undefined : (tryParseMoney(answer) ?? undefined);
     }
   }
 
@@ -912,16 +963,18 @@ export async function runImportApple(
           return;
         }
       }
+    } else {
+      console.log(dim("  No existing Apple rows found in range; proceeding as insert-only."));
     }
   }
 
   // --- Run ---
-  // Recat + snapshot + daily-score backfill all happen inside the spinner's
-  // scope so a multi-month import doesn't appear to hang after "Importing..."
-  // ticks — backfill alone can take ~2s on a 6-month CSV. The spinner's
-  // succeed message reports the scored-day count so the user still sees
-  // concrete feedback. Recat output is buffered and flushed below under its
-  // own heading only when rules actually updated rows.
+  // Split the try/catch at the commit boundary so a post-import derivation
+  // failure (recat, net-worth snapshot, daily-score backfill) can't make a
+  // successful import appear to have failed. Pre-commit failure => "Import
+  // failed" + exit 1. Post-commit failure => warn the user that the import
+  // itself succeeded but the follow-up derivation didn't, then continue to
+  // the summary so they still see what was written.
   const spinner = ora(opts.dryRun ? "Previewing import..." : "Importing...").start();
   let result;
   const recatBuf: string[] = [];
@@ -929,6 +982,7 @@ export async function runImportApple(
   let daysScored = 0;
   let scoredRange: { start: string; end: string } | null = null;
   let netWorthSnapshot: number | null = null;
+  let postImportError: Error | null = null;
   try {
     result = runAppleImport(db, {
       csvPath,
@@ -938,7 +992,15 @@ export async function runImportApple(
       dryRun: opts.dryRun,
       preParsed: parsed,
     });
+  } catch (err: any) {
+    spinner.fail(formatError(err, "Import failed"));
+    process.exit(1);
+  }
 
+  // Post-commit derivation: recat, net-worth snapshot, daily-score backfill.
+  // Skipped on dry-run. Failures here must not masquerade as import failures
+  // — rows are already committed by runAppleImport.
+  try {
     // Run the same post-ingest derivation ray sync runs — recategorization +
     // daily score + achievement checks — so Apple-only users (no Plaid
     // institutions) don't get an empty daily_scores table forever, and
@@ -987,17 +1049,23 @@ export async function runImportApple(
       }
     }
 
-    // Incorporate the scored-day count into the succeed message so a long
-    // backfill can't feel like a silent stall.
+  } catch (err: any) {
+    postImportError = err;
+  }
+
+  // Incorporate the scored-day count into the succeed message so a long
+  // backfill can't feel like a silent stall. Post-import-step failures are
+  // surfaced as a warning (not a failure) since the rows are already committed.
+  if (postImportError) {
+    const msg = (postImportError && postImportError.message) || String(postImportError);
+    spinner.warn(`Imported successfully, but post-import steps failed: ${msg}`);
+  } else {
     const succeedMsg = opts.dryRun
       ? "Preview complete."
       : daysScored > 0
         ? `Import complete. ${chalk.dim(`(${daysScored} day${daysScored === 1 ? "" : "s"} scored)`)}`
         : "Import complete.";
     spinner.succeed(succeedMsg);
-  } catch (err: any) {
-    spinner.fail(formatError(err, "Import failed"));
-    process.exit(1);
   }
 
   // --- Warnings (printed first so they can't be missed below the summary) ---

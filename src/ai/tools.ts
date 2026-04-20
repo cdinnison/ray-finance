@@ -13,6 +13,7 @@ import { generateAlerts } from "../alerts/index.js";
 import { saveMemory, getMemories } from "./memory.js";
 import { readContext, writeContext, replaceContextSection } from "./context.js";
 import { simulatePayoff } from "../db/helpers.js";
+import { sanitizeForPrompt } from "./insights.js";
 
 export const toolDefinitions: ToolDefinition[] = [
   // --- Existing tools ---
@@ -360,7 +361,9 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
         limit: toolInput.limit,
       });
       if (txns.length === 0) return "No transactions found matching those filters.";
-      return txns.map(t => `${t.date} | ${t.name} | ${formatMoney(t.amount)} | ${categoryLabel(t.category)}`).join("\n");
+      // Sanitize user-controlled text (name, merchant) so an injected
+      // instruction in a merchant field can't smuggle directives to the model.
+      return txns.map(t => `${t.date} | ${sanitizeForPrompt(t.name)} | ${formatMoney(t.amount)} | ${categoryLabel(t.category)}`).join("\n");
     }
 
     case "get_spending_summary": {
@@ -449,7 +452,7 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       ).all() as { merchant_name: string | null; description: string; avg_amount: number; last_amount: number; frequency: string; last_date: string; stream_type: string }[];
       if (rows.length === 0) return "No recurring transactions detected yet.";
       return rows.map(r => {
-        const name = r.merchant_name || r.description;
+        const name = sanitizeForPrompt(r.merchant_name || r.description);
         const arrow = r.stream_type === "inflow" ? "+" : "-";
         return `${arrow} ${name}: ${formatMoney(Math.abs(r.avg_amount))} (${r.frequency.toLowerCase()}, last: ${r.last_date})`;
       }).join("\n");
@@ -488,8 +491,8 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
 
     case "search_transactions": {
       const results = searchTransactions(db, toolInput.query, toolInput.limit);
-      if (results.length === 0) return `No transactions found matching "${toolInput.query}".`;
-      return results.map(t => `${t.date} | ${t.name}${t.merchant_name ? ` (${t.merchant_name})` : ""} | ${formatMoney(t.amount)} | ${categoryLabel(t.category)}`).join("\n");
+      if (results.length === 0) return `No transactions found matching "${sanitizeForPrompt(toolInput.query)}".`;
+      return results.map(t => `${t.date} | ${sanitizeForPrompt(t.name)}${t.merchant_name ? ` (${sanitizeForPrompt(t.merchant_name)})` : ""} | ${formatMoney(t.amount)} | ${categoryLabel(t.category)}`).join("\n");
     }
 
     case "categorize_transaction": {

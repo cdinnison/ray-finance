@@ -157,6 +157,13 @@ export function parseCsv(text: string): string[][] {
     i++;
   }
 
+  // Unterminated quoted field at EOF means the file was truncated or a quote
+  // is missing — silently pushing partial content would let downstream parsing
+  // accept a corrupted row as truth. Fail loudly so the caller can surface it.
+  if (inQuotes) {
+    throw new Error("CSV parse error: unterminated quoted field — file may be truncated or a quote is missing.");
+  }
+
   // Final field / row (no trailing newline)
   if (field.length > 0 || row.length > 0) {
     row.push(field);
@@ -514,6 +521,30 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'USD', NULL, ?, NULL)`
   );
 
+  // Snapshot user-applied edits (note/label/category/subcategory) on rows we
+  // are about to DELETE under --replace-range so we can re-apply them onto
+  // the newly inserted rows that hash to the same transaction_id. Without
+  // this, a re-import would silently drop notes/labels the user wrote via
+  // `ray label-transaction` or the AI tool, and any manual recategorization
+  // would revert to the Apple-source category on every re-run.
+  let preserved: { transaction_id: string; note: string | null; label: string | null; category: string | null; subcategory: string | null }[] = [];
+  if (opts.replaceRange) {
+    preserved = db.prepare(
+      `SELECT transaction_id, note, label, category, subcategory FROM transactions
+       WHERE account_id = ? AND date BETWEEN ? AND ?
+         AND (note IS NOT NULL OR label IS NOT NULL OR category IS NOT NULL OR subcategory IS NOT NULL)`
+    ).all(ACCOUNT_ID, replaceFirst, replaceLast) as typeof preserved;
+  }
+
+  const restoreUserFields = db.prepare(
+    `UPDATE transactions
+        SET note        = COALESCE(note, ?),
+            label       = COALESCE(label, ?),
+            category    = COALESCE(category, ?),
+            subcategory = COALESCE(subcategory, ?)
+      WHERE transaction_id = ?`
+  );
+
   const work = db.transaction(() => {
     insertInst.run(INSTITUTION_ID, INSTITUTION_NAME);
     insertAcc.run(
@@ -557,6 +588,16 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
       );
       if (Number(info.changes) === 1) rowsInserted++;
       else rowsSkipped++;
+    }
+
+    // Re-apply snapshotted user fields to any re-inserted rows that share the
+    // same transaction_id. COALESCE keeps whatever the CSV row already
+    // provided (e.g. fresh Apple category) unless the column is NULL, in
+    // which case we fall back to the user-preserved value.
+    if (opts.replaceRange && preserved.length > 0) {
+      for (const p of preserved) {
+        restoreUserFields.run(p.note, p.label, p.category, p.subcategory, p.transaction_id);
+      }
     }
   });
   work();

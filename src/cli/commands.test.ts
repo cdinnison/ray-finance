@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { getImportAppleBackfillWindow, parseMoneyStrict } from "./commands.js";
+import Database from "libsql";
+import { getImportAppleBackfillWindow, parseMoneyStrict, cleanupDerivedAfterRemove, tryParseMoney } from "./commands.js";
+import { migrate } from "../db/schema.js";
 
 describe("getImportAppleBackfillWindow", () => {
   it("backs up to yesterday for same-day-only imports", () => {
@@ -104,5 +106,60 @@ describe("parseMoneyStrict", () => {
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining('--limit must be a number (got "not-a-number")')
     );
+  });
+});
+
+describe("tryParseMoney", () => {
+  it("parses plain, decimal, formatted, and negative values", () => {
+    expect(tryParseMoney("1234")).toBe(1234);
+    expect(tryParseMoney("1234.56")).toBe(1234.56);
+    expect(tryParseMoney("$1,200.50")).toBe(1200.5);
+    expect(tryParseMoney("-100")).toBe(-100);
+  });
+
+  it("returns null for empty/garbage/trailing-junk", () => {
+    expect(tryParseMoney("")).toBeNull();
+    expect(tryParseMoney("   ")).toBeNull();
+    expect(tryParseMoney("foo")).toBeNull();
+    expect(tryParseMoney("123abc")).toBeNull();
+    expect(tryParseMoney("1.2.3")).toBeNull();
+  });
+});
+
+describe("cleanupDerivedAfterRemove", () => {
+  it("refreshes daily_scores and net_worth_history after account removal", () => {
+    // Regression for F023: removing an account left stale daily_scores and
+    // net_worth_history rows referencing the now-deleted account. Calling
+    // cleanupDerivedAfterRemove after the DELETE must repopulate both.
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    migrate(db);
+
+    // Seed a small account with one transaction so daily_scores has
+    // something to score against.
+    db.prepare(
+      `INSERT INTO institutions (item_id, access_token, name, products)
+       VALUES ('test-inst', 'manual', 'Test', '[]')`
+    ).run();
+    db.prepare(
+      `INSERT INTO accounts (account_id, item_id, name, type, current_balance)
+       VALUES ('test-acct', 'test-inst', 'Test', 'depository', 500)`
+    ).run();
+
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, pending, iso_currency_code)
+       VALUES ('t1', 'test-acct', 10, ?, 'Coffee', 0, 'USD')`
+    ).run(today);
+
+    // Run cleanup — this should produce a daily_scores row for today and a
+    // net_worth_history snapshot.
+    cleanupDerivedAfterRemove(db as any, ["test-acct"]);
+
+    const dsRows = db.prepare(`SELECT COUNT(*) as c FROM daily_scores WHERE date = ?`).get(today) as { c: number };
+    expect(dsRows.c).toBe(1);
+
+    const nwRows = db.prepare(`SELECT COUNT(*) as c FROM net_worth_history`).get() as { c: number };
+    expect(nwRows.c).toBeGreaterThan(0);
   });
 });
