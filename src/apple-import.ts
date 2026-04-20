@@ -289,8 +289,8 @@ export function parseAppleCsv(text: string): {
   }
 
   // One warning per unique unmapped category (not per row) so the post-import
-  // summary isn't flooded. Message names the category, row count, and how to
-  // fix via a recat rule — the same shape commands.ts already prints.
+  // summary isn't flooded. Message names the category and row count and
+  // points the user at the AI assistant for recategorization.
   for (const [cat, count] of unmappedCategoryCounts) {
     warnings.push(`Unknown Apple category "${cat}" (${count} rows) — imported without category. To recategorize, run \`ray\` and ask the assistant (e.g. "recategorize transactions where the source category is X to Y").`);
   }
