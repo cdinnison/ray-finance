@@ -566,20 +566,39 @@ describe("queries include NULL-category spending rows (F032 regression)", () => 
     expect(cf.expenses).toBeGreaterThanOrEqual(32);
   });
 
-  it("compareSpending EXCLUDES NULL-category rows (deliberate exception from F032's include-null rule)", () => {
-    // F007 carved compareSpending out of the general F032 include-NULL invariant:
-    // downstream UI consumers key the comparison by `c.category` (Map key) and
-    // categoryLabel() renders both literal 'Other' and NULL as the string
-    // 'Other', so keeping NULL in compareSpending produced two visually
-    // duplicate 'Other' rows. Solution per the human fix_hint: exclude NULL
-    // from compareSpending specifically while leaving getCashFlow,
-    // getCashFlowThisMonth, and the other expense-side queries NULL-inclusive.
-    // If a future refactor reintroduces NULL into compareSpending, expect
-    // duplicate-Other UI regressions; other NULL-inclusion tests above still
-    // pin the general rule.
+  it("compareSpending INCLUDES NULL-category rows and coalesces them into a single 'Other' bucket", () => {
+    // compareSpending is now NULL-inclusive to match every other expense-side
+    // query (getCashFlow, getCashFlowThisMonth, showRecap's totalSpent, etc.).
+    // Previously NULL was excluded as a carve-out to dodge duplicate-'Other'
+    // UI rows (categoryLabel(null) and categoryLabel('Other') both render as
+    // "Other"). That carve-out produced inconsistent totals: the headline
+    // spend number and the pct-change baseline were computed from different
+    // row sets. The invariant is preserved instead by coalescing NULL into
+    // the literal 'Other' key in the JS aggregation step so a NULL row and a
+    // literal 'Other' row merge into one bucket before p1Map/p2Map are built.
     const cmp = compareSpending(db, "2024-12-01", "2024-12-31", "2025-01-01", "2025-01-31");
-    // 50 (food) only — NULL excluded, TRANSFER_OUT excluded, no LOAN_PAYMENTS present
-    expect(cmp.period2Total).toBe(50);
+    // 50 (food) + 35 (NULL) — TRANSFER_OUT excluded, no LOAN_PAYMENTS present
+    expect(cmp.period2Total).toBe(85);
+  });
+
+  it("compareSpending merges a NULL-category row and a literal 'Other' row into one categories[] entry", () => {
+    // Regression for the NULL/literal-'Other' duplicate-row guarantee: even
+    // when a period has BOTH a NULL-category row and an explicit 'Other'
+    // category row, they must surface as a single categories[] entry keyed
+    // on 'Other' (not two rows that render identically). The JS coalesce
+    // maps NULL → 'Other' BEFORE p1Map/p2Map are built, so an explicit
+    // 'Other' row is summed into the same bucket.
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, category, pending) VALUES (?, ?, ?, ?, ?, 'Other', 0)`
+    ).run("literal-other", "a", 20, "2025-01-16", "Other literal");
+
+    const cmp = compareSpending(db, "2024-12-01", "2024-12-31", "2025-01-01", "2025-01-31");
+    // p2: 50 (FOOD) + 35 (NULL) + 20 (literal 'Other') = 105. Categories
+    // must have one 'Other' entry merging the 35 + 20 contributions.
+    expect(cmp.period2Total).toBe(105);
+    const others = cmp.categories.filter(c => c.category === "Other");
+    expect(others).toHaveLength(1);
+    expect(others[0].period2).toBe(55);
   });
 
   // F032 companion invariant: the NULL-inclusion fix is expense-side only.

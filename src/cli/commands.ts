@@ -48,6 +48,27 @@ export function tryParseMoney(v: string): number | null {
 }
 
 /**
+ * Like `tryParseMoney`, but additionally enforces optional inclusive min/max
+ * bounds. Returns `null` for values outside the range (with no error output;
+ * inquirer validators turn the null into a user-visible validation error).
+ *
+ * Used by the interactive prompt validators for import-apple fields where
+ * out-of-range values are semantically meaningless (APR < 0 or > 100; limit
+ * or balance < 0) and would otherwise produce junk downstream (negative
+ * available_balance, inverted payoff simulations, etc.).
+ */
+export function tryParseMoneyInRange(
+  v: string,
+  range: { min?: number; max?: number } = {}
+): number | null {
+  const n = tryParseMoney(v);
+  if (n === null) return null;
+  if (range.min !== undefined && n < range.min) return null;
+  if (range.max !== undefined && n > range.max) return null;
+  return n;
+}
+
+/**
  * Strict money parser for CLI flags. Returns `undefined` only when the flag is
  * truly absent or an empty string — any other non-numeric input is a hard
  * error so that `--balance=123abc` fails fast instead of silently parsing to
@@ -56,7 +77,11 @@ export function tryParseMoney(v: string): number | null {
  *
  * Accepts `$` and `,` as purely cosmetic (e.g. "$1,200.50") and supports an
  * optional leading `-` so negative amounts survive if a caller ever allows
- * them. Everything else is rejected.
+ * them. Out-of-range values (per the optional `range.min`/`range.max`
+ * bounds, inclusive) are also rejected as a hard error — the CLI layer is
+ * the right boundary to enforce per-field semantic ranges (APR ∈ [0, 100],
+ * limits ≥ 0, import-apple balance ≥ 0) so junk never reaches liabilities /
+ * accounts tables or downstream payoff / utilization math.
  *
  * When `exitOnError` is true (the default for CLI use) the function prints a
  * red error naming the flag and exits with code 1; when false it returns
@@ -65,12 +90,23 @@ export function tryParseMoney(v: string): number | null {
 export function parseMoneyStrict(
   flagName: string,
   v: string | undefined,
-  exitOnError = true
+  exitOnError = true,
+  range: { min?: number; max?: number } = {}
 ): number | undefined | null {
   if (v === undefined || v === "") return undefined;
   const n = tryParseMoney(v);
   if (n === null) {
     console.error(chalk.red(`Error: --${flagName} must be a number (got "${v}")`));
+    if (exitOnError) process.exit(1);
+    return null;
+  }
+  if (range.min !== undefined && n < range.min) {
+    console.error(chalk.red(`Error: --${flagName} must be >= ${range.min} (got ${n})`));
+    if (exitOnError) process.exit(1);
+    return null;
+  }
+  if (range.max !== undefined && n > range.max) {
+    console.error(chalk.red(`Error: --${flagName} must be <= ${range.max} (got ${n})`));
     if (exitOnError) process.exit(1);
     return null;
   }
@@ -593,16 +629,22 @@ export async function runRemove(): Promise<void> {
   // the user's input and before "Removed <name>." prints. Spinner is kept
   // OUTSIDE cleanupDerivedAfterRemove's internal db.transaction so the
   // spinner lifecycle (start/succeed/fail) is independent of transaction
-  // boundaries. spinner.fail + process.exit(1) on throw matches runSync's
-  // error-handling idiom at L97-111.
+  // boundaries.
+  //
+  // On throw: the institution/account DELETE already committed above, so a
+  // derivation-tail failure here must not report "Remove failed" — that
+  // would wrongly suggest the primary removal itself failed. Degrade to
+  // spinner.warn and continue, matching runDailySync's post-sync derivation
+  // handling and runImportApple's post-import derivation handling.
   const spinner = ora("Recomputing derived data...").start();
   try {
     cleanupDerivedAfterRemove(db, removedAccountIds);
+    spinner.succeed(chalk.green(`Removed ${entry.name}.`));
   } catch (err: any) {
-    spinner.fail(formatError(err, "Remove failed"));
-    process.exit(1);
+    spinner.warn(
+      `Removed ${entry.name}; post-remove cleanup failed: ${(err && err.message) || String(err)}`
+    );
   }
-  spinner.succeed(chalk.green(`Removed ${entry.name}.`));
   console.log();
 }
 
@@ -624,9 +666,22 @@ export function cleanupDerivedAfterRemove(db: ReturnType<typeof getDb>, _removed
   // runDailySync's own backfill loop is strict-less-than yesterday so it
   // would never overwrite a stale partial row on the next sync.
   const start = new Date(now.getTime() - 90 * 86400000);
+  const startStr = start.toISOString().slice(0, 10);
   const endStr = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
-  let d = start.toISOString().slice(0, 10);
+  let d = startStr;
   const work = db.transaction(() => {
+    // Purge stale daily_scores rows in the 90-day window BEFORE rescoring.
+    // calculateDailyScore's hasPriorActivity guard returns without writing
+    // for dates that predate any transaction — so if removing the only
+    // transaction source (e.g. the user's sole Plaid institution) empties
+    // the transactions table, every rescore loop iteration is a no-op and
+    // the pre-existing stale daily_scores rows (referencing the now-deleted
+    // account's spending) survive unchanged. Deleting first makes cleanup
+    // self-contained: calculateDailyScore then re-creates only days with
+    // legitimate remaining activity, and achievement checks that scan
+    // MAX(*_streak) / COUNT(zero_spend=1) over daily_scores won't see
+    // phantom rows from the removed account's historical data.
+    db.prepare(`DELETE FROM daily_scores WHERE date BETWEEN ? AND ?`).run(startStr, endStr);
     while (d <= endStr) {
       calculateDailyScore(db, d);
       const [y, mo, dy] = d.split("-").map(Number);
@@ -712,7 +767,10 @@ export function showRecap(period = "last_month"): void {
   }
 
   // Spending this period. NULL-safe category filter (see apple-import.ts for
-  // the NULL-category rows this must include in the total).
+  // the NULL-category rows this must include in the total). compareSpending
+  // (used below for the prior-month comparison) is also NULL-inclusive now
+  // and coalesces NULL into the 'Other' bucket in JS, so totalSpent and
+  // cmp.pctChange reference the same row set.
   const spending = db.prepare(
     `SELECT SUM(amount) as total, COUNT(*) as count FROM transactions
      WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
@@ -893,7 +951,7 @@ export async function runImportApple(
   }
   const otherWarnings = parsePreview.warnings.length - parsePreview.skippedCount;
   if (otherWarnings > 0) {
-    console.log(chalk.yellow(`  ${otherWarnings} warning${otherWarnings === 1 ? "" : "s"} (see below)`));
+    console.log(chalk.yellow(`  ${otherWarnings} warning${otherWarnings === 1 ? "" : "s"} (see warnings below)`));
   }
   console.log("");
 
@@ -903,7 +961,11 @@ export async function runImportApple(
   // answers share the same strict parser via `tryParseMoney`, which is also
   // what the `validate` hook uses — so a value that passes `validate` is
   // guaranteed to parse non-null here.
-  let balance = parseMoneyStrict("balance", opts.balance) as number | undefined;
+  // Range-enforced at the CLI boundary: a negative Apple Card balance makes
+  // no sense (you owe >= 0 on a credit card) and would corrupt
+  // available_balance = balance_limit - current_balance, inverted utilization,
+  // etc. Manual-asset runAdd remains unbounded (negative equity legitimate).
+  let balance = parseMoneyStrict("balance", opts.balance, true, { min: 0 }) as number | undefined;
   // Dry-run skips prompts but the real import will require a balance on first
   // run — surface that now so the preview isn't misleading.
   if (opts.dryRun && !existed && balance === undefined) {
@@ -939,17 +1001,19 @@ export async function runImportApple(
         default: existingBalance != null ? String(existingBalance) : undefined,
         validate: (v: string) => {
           if (v.trim() === "") return existed ? true : "Required — enter your current balance";
-          return tryParseMoney(v) === null
-            ? (existed ? "Enter a number or leave blank" : "Enter a number")
+          return tryParseMoneyInRange(v, { min: 0 }) === null
+            ? (existed ? "Enter a non-negative number or leave blank" : "Enter a non-negative number")
             : true;
         },
       }]);
-      balance = answer.trim() === "" ? undefined : (tryParseMoney(answer) ?? undefined);
+      balance = answer.trim() === "" ? undefined : (tryParseMoneyInRange(answer, { min: 0 }) ?? undefined);
     }
   }
 
   // --- Credit limit (optional) ---
-  let limit = parseMoneyStrict("limit", opts.limit) as number | undefined;
+  // Credit limit must be non-negative — a negative limit would produce a
+  // junk available_balance and corrupt the downstream utilization display.
+  let limit = parseMoneyStrict("limit", opts.limit, true, { min: 0 }) as number | undefined;
   if (limit === undefined && !opts.dryRun) {
     // Limit is optional — in non-TTY mode we just skip the prompt and proceed
     // with `undefined`, rather than failing the whole import.
@@ -969,10 +1033,12 @@ export async function runImportApple(
         default: existingLimit != null ? String(existingLimit) : undefined,
         validate: (v: string) => {
           if (v.trim() === "") return true;
-          return tryParseMoney(v) === null ? "Enter a number or leave blank" : true;
+          return tryParseMoneyInRange(v, { min: 0 }) === null
+            ? "Enter a non-negative number or leave blank"
+            : true;
         },
       }]);
-      limit = answer.trim() === "" ? undefined : (tryParseMoney(answer) ?? undefined);
+      limit = answer.trim() === "" ? undefined : (tryParseMoneyInRange(answer, { min: 0 }) ?? undefined);
     }
   }
 
@@ -982,7 +1048,12 @@ export async function runImportApple(
   // re-run without --apr preserves the prior stored rate rather than
   // clobbering it with NULL. Without an APR, downstream consumers (AI debt
   // tools / insights) render the card as "APR unknown" rather than 0%.
-  let apr = parseMoneyStrict("apr", opts.apr) as number | undefined;
+  // APR is a percentage, inclusive in [0, 100]. A negative rate or a
+  // >100% rate would break simulatePayoff (negative monthlyRate principal
+  // decreases faster than payment; 1000% monthlyRate overstates timelines).
+  // 0 is a genuinely promotional rate so is inclusive; 100% covers the
+  // retail-card tail.
+  let apr = parseMoneyStrict("apr", opts.apr, true, { min: 0, max: 100 }) as number | undefined;
   if (apr === undefined && !opts.dryRun) {
     if (!process.stdin.isTTY) {
       console.log(
@@ -1000,10 +1071,12 @@ export async function runImportApple(
         default: existingApr != null ? String(existingApr) : undefined,
         validate: (v: string) => {
           if (v.trim() === "") return true;
-          return tryParseMoney(v) === null ? "Enter a number or leave blank" : true;
+          return tryParseMoneyInRange(v, { min: 0, max: 100 }) === null
+            ? "Enter a percent between 0 and 100, or leave blank"
+            : true;
         },
       }]);
-      apr = answer.trim() === "" ? undefined : (tryParseMoney(answer) ?? undefined);
+      apr = answer.trim() === "" ? undefined : (tryParseMoneyInRange(answer, { min: 0, max: 100 }) ?? undefined);
     }
   }
 
@@ -1020,7 +1093,7 @@ export async function runImportApple(
         // Non-TTY (scripted / CI / piped) must never block on inquirer.
         // Row count and date range are already in the summary above, so the
         // error stays terse.
-        console.error(chalk.red("Error: Non-interactive mode: pass --yes to confirm."));
+        console.error(chalk.red("Error: --yes is required in non-interactive mode to confirm --replace-range."));
         process.exit(1);
       }
       if (!opts.yes) {
@@ -1080,7 +1153,7 @@ export async function runImportApple(
   // partial daily_scores rows — rather than leaving the user with a
   // "post-import steps failed" warning alongside half-applied derived state
   // that subsequent `ray sync` / `ray status` reads assume is self-consistent.
-  // Matches cleanupDerivedAfterRemove's pattern at L612.
+  // Matches cleanupDerivedAfterRemove's pattern.
   if (!opts.dryRun) {
     // Route BOTH log and error through recatBuf so neither writes to the
     // TTY while the ora spinner is still animating (which would mangle the
@@ -1132,17 +1205,33 @@ export async function runImportApple(
         // only from the first successfully imported row, or stale daily_scores
         // can survive for boundary dates that were deleted due to malformed rows.
         if (backfillWindow) {
-          const { start, end } = backfillWindow;
-          spinner.text = `Backfilling daily scores (${start} \u2192 ${end})...`;
-          let d = start;
-          while (d <= end) {
-            calculateDailyScore(db, d);
-            localDaysScored++;
-            const [y, mo, dy] = d.split("-").map(Number);
-            const next = new Date(Date.UTC(y, mo - 1, dy + 1));
-            d = next.toISOString().slice(0, 10);
+          // calculateDailyScore no-ops on pre-first-transaction dates (its
+          // hasPriorActivity guard returns a zero DailyScore WITHOUT
+          // inserting into daily_scores). Clamp the loop's start to the
+          // actual MIN(transactions.date) so localDaysScored and the
+          // "Scored N day(s), start -> end" summary line reflect only
+          // days we actually persisted a row for. Starting earlier would
+          // inflate both count AND range; a CSV beginning long before any
+          // Plaid history would otherwise show "Scored 90 days" when the
+          // DB only gained a handful of rows.
+          const firstTxn = db.prepare(`SELECT MIN(date) as d FROM transactions`).get() as { d: string | null };
+          if (firstTxn.d != null) {
+            const { start: origStart, end } = backfillWindow;
+            const start = origStart > firstTxn.d ? origStart : firstTxn.d;
+            spinner.text = `Backfilling daily scores (${start} \u2192 ${end})...`;
+            let d = start;
+            while (d <= end) {
+              calculateDailyScore(db, d);
+              localDaysScored++;
+              const [y, mo, dy] = d.split("-").map(Number);
+              const next = new Date(Date.UTC(y, mo - 1, dy + 1));
+              d = next.toISOString().slice(0, 10);
+            }
+            localScoredRange = { start, end };
           }
-          localScoredRange = { start, end };
+          // If firstTxn.d is null, the transactions table is empty --
+          // leave localDaysScored=0 and localScoredRange=null so the
+          // summary doesn't report scored days that were never persisted.
         }
       }
       return {
@@ -1165,6 +1254,17 @@ export async function runImportApple(
       // the post-spinner summary won't report derivations that were
       // rolled back.
       postImportError = err;
+      // recatBuf is a JS array captured by bufLogger's closure — it was
+      // populated BEFORE the throw as applyRecategorizationRules emitted
+      // per-rule success lines, but sqlite's rollback only reverts DB
+      // state, not JS-heap mutations. Clear it so the post-summary
+      // Recategorization flush doesn't print "Recategorized N txn(s)"
+      // lines for UPDATEs that were actually rolled back alongside the
+      // spinner.warn('post-import steps failed'). Legitimate invalid-rule
+      // error messages (routed through bufLogger.error) are also in this
+      // buffer — accepting their loss is the trade for the simple clear;
+      // a follow-up could split success/error buffers to preserve them.
+      recatBuf.length = 0;
     }
   }
 
@@ -1220,7 +1320,7 @@ export async function runImportApple(
     console.log(`  Date range:    ${result.dateRange.first} → ${result.dateRange.last}`);
   }
   if (opts.replaceRange && result.replaceWindow) {
-    console.log(`  Replace window:${result.replaceWindow.first === result.replaceWindow.last ? " " : ""} ${result.replaceWindow.first} → ${result.replaceWindow.last}`);
+    console.log(`  Replace window: ${result.replaceWindow.first} → ${result.replaceWindow.last}`);
   }
   console.log(`  Rows parsed:   ${result.rowsParsed}`);
   const deleteLabel = opts.dryRun ? "Would delete: " : "Rows deleted: ";
@@ -1260,7 +1360,7 @@ export async function runImportApple(
   // --- Scoring + achievements (outputs that come after the summary) ---
   if (!opts.dryRun) {
     if (netWorthSnapshot !== null) {
-      console.log(dim(`  Net worth snapshot: $${netWorthSnapshot.toLocaleString()}`));
+      console.log(dim(`  Net worth snapshot: ${rawFormatMoney(netWorthSnapshot)}`));
     }
     if (scoredRange && daysScored > 0) {
       console.log(dim(`  Scored ${daysScored} day(s), ${scoredRange.start} \u2192 ${scoredRange.end}`));

@@ -163,7 +163,7 @@ Apple Card isn't supported by Plaid, so Ray provides a CSV importer. Export your
 ray import-apple ~/Downloads/apple-card.csv --balance 1847.32
 ```
 
-On first run Ray creates an "Apple Card" manual account. On subsequent monthly imports, rows are deduplicated by a stable hash of date, amount, and merchant, so re-running is safe. If Apple retroactively updates pending charges or merchant names, use `--replace-range` to overwrite the CSV's date range authoritatively. Apple's categories are mapped to Ray's category taxonomy so transactions participate in spending, scoring, and budgets like any other account. If you've configured auto-recategorization rules (via the AI advisor's `add_recat_rule` tool), they're applied automatically after each import — no separate `ray sync` needed.
+On first run Ray creates an "Apple Card" manual account. On subsequent monthly imports, rows are deduplicated by a stable hash of the full row content, so re-running is safe. If Apple retroactively updates pending charges or merchant names, use `--replace-range` to overwrite the CSV's date range authoritatively. Apple's categories are mapped to Ray's category taxonomy so transactions participate in spending, scoring, and budgets like any other account. If you've configured auto-recategorization rules (via the AI advisor's `add_recat_rule` tool), they're applied automatically after each import — no separate `ray sync` needed.
 
 ## Security & Privacy
 

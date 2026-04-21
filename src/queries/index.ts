@@ -175,11 +175,15 @@ export function getCashFlowThisMonth(db: Database): { income: number; expenses: 
   // Expense-side NULL-category filter (Apple imports write NULL for "Other"
   // and any unmapped category — see apple-import.ts CATEGORY_MAP). Plain
   // `NOT IN` drops NULL rows under SQLite three-valued logic, silently
-  // understating expense totals. We deliberately do NOT apply the same
-  // treatment to the income side (amount < 0): a NULL-category negative
-  // amount is overwhelmingly an Apple Card refund or a pre-mapping
-  // TRANSFER_IN, neither of which is income. Old `NOT IN` behavior is
-  // correct there.
+  // understating expense totals. The category list also excludes
+  // TRANSFER_IN because Apple Debit rows (Daily Cash clawbacks — see
+  // the Debit entry in apple-import.ts CATEGORY_MAP) map to TRANSFER_IN
+  // with amount > 0; excluding
+  // them keeps cash-reward corrections out of spend totals. We
+  // deliberately do NOT apply the same treatment to the income side
+  // (amount < 0): a NULL-category negative amount is overwhelmingly an
+  // Apple Card refund or a pre-mapping TRANSFER_IN, neither of which is
+  // income. Old `NOT IN` behavior is correct there.
   const income = db
     .prepare(
       `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
@@ -576,6 +580,21 @@ export function getDebts(db: Database): {
 
 // --- Spending comparison ---
 
+/**
+ * Compare total spending across two periods, broken down by category.
+ *
+ * NULL-category rows (Apple "Other" and unmapped Apple rows, plus any
+ * pre-mapping Plaid rows) are INCLUDED in both totals and the categories
+ * list, matching the NULL-inclusive convention used by every other
+ * expense-side query (getCashFlow, getCashFlowThisMonth, showRecap, etc.).
+ * A previous carve-out excluded NULL here to avoid duplicate "Other" UI
+ * rows (categoryLabel(null) and categoryLabel('Other') both render as
+ * "Other"); we now preserve that guarantee by coalescing NULL into the
+ * literal 'Other' key in the JS aggregation step BELOW, so a NULL row and
+ * a literal 'Other' row merge into one logical bucket before p1Map/p2Map
+ * are built. Keep the coalesce in sync with categoryLabel's NULL handling
+ * — if that renderer changes, revisit the bucket key here.
+ */
 export function compareSpending(db: Database, period1Start: string, period1End: string, period2Start: string, period2End: string): {
   period1Total: number; period2Total: number; difference: number; pctChange: number;
   categories: { category: string; period1: number; period2: number; diff: number }[];
@@ -584,16 +603,28 @@ export function compareSpending(db: Database, period1Start: string, period1End: 
     return db.prepare(
       `SELECT category, SUM(amount) as total FROM transactions
        WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-       AND category IS NOT NULL AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')
+       AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))
        GROUP BY category`
-    ).all(start, end) as { category: string; total: number }[];
+    ).all(start, end) as { category: string | null; total: number }[];
   };
 
   const p1 = getByCategory(period1Start, period1End);
   const p2 = getByCategory(period2Start, period2End);
 
-  const p1Map = new Map(p1.map(r => [r.category, r.total]));
-  const p2Map = new Map(p2.map(r => [r.category, r.total]));
+  // Coalesce NULL into the literal 'Other' key BEFORE constructing the
+  // period maps so a NULL-category row and a literal-'Other' row merge
+  // into one bucket (categoryLabel renders both as "Other" — two buckets
+  // would surface as duplicate UI rows).
+  const p1Map = new Map<string, number>();
+  for (const r of p1) {
+    const key = r.category ?? "Other";
+    p1Map.set(key, (p1Map.get(key) ?? 0) + r.total);
+  }
+  const p2Map = new Map<string, number>();
+  for (const r of p2) {
+    const key = r.category ?? "Other";
+    p2Map.set(key, (p2Map.get(key) ?? 0) + r.total);
+  }
   const allCats = new Set([...p1Map.keys(), ...p2Map.keys()]);
 
   const categories = [...allCats].map(cat => ({

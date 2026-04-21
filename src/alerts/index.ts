@@ -1,4 +1,5 @@
 import type BetterSqlite3 from "libsql";
+import { sanitizeForPrompt } from "../ai/insights.js";
 type Database = BetterSqlite3.Database;
 
 export interface Alert {
@@ -22,10 +23,13 @@ export function generateAlerts(db: Database): Alert[] {
     .all() as any[];
 
   for (const tx of large) {
+    // Alerts flow into the LLM via get_alerts — merchant/name/account_name
+    // are all user-controllable (CSV import merchant fields, institution-
+    // supplied names). Sanitize before interpolating.
     alerts.push({
       type: "large_transaction",
       severity: "warning",
-      message: `Large charge: $${tx.amount} at ${tx.merchant_name || tx.name} (${tx.account_name})`,
+      message: `Large charge: $${tx.amount} at ${sanitizeForPrompt(tx.merchant_name || tx.name)} (${sanitizeForPrompt(tx.account_name)})`,
       data: tx,
     });
   }
@@ -42,7 +46,7 @@ export function generateAlerts(db: Database): Alert[] {
     alerts.push({
       type: "low_balance",
       severity: acct.current_balance < 500 ? "critical" : "warning",
-      message: `Low balance: ${acct.name} has $${acct.current_balance.toFixed(2)}`,
+      message: `Low balance: ${sanitizeForPrompt(acct.name)} has $${acct.current_balance.toFixed(2)}`,
       data: acct,
     });
   }
@@ -97,12 +101,13 @@ export function generateAlerts(db: Database): Alert[] {
     if (r.avg_amount === 0) continue;
     const diff = Math.abs(r.last_amount - r.avg_amount);
     if (diff > 0.5 && diff / Math.abs(r.avg_amount) > 0.05) {
-      const name = r.merchant_name || r.description;
+      const rawName = r.merchant_name || r.description;
+      const name = sanitizeForPrompt(rawName);
       alerts.push({
         type: "price_change",
         severity: "info",
         message: `Price change: ${name} went from $${Math.abs(r.avg_amount).toFixed(2)} to $${Math.abs(r.last_amount).toFixed(2)} (${r.frequency.toLowerCase()})`,
-        data: { merchant: name, previous: r.avg_amount, current: r.last_amount, frequency: r.frequency },
+        data: { merchant: rawName, previous: r.avg_amount, current: r.last_amount, frequency: r.frequency },
       });
     }
   }

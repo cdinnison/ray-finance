@@ -24,6 +24,8 @@ export interface Achievement {
 /**
  * Calculate and store the daily score for a given date (defaults to yesterday).
  * Should run during daily sync, after transactions are updated.
+ * Returns a zeroed (unpersisted) score if no prior transaction activity exists
+ * for the date (backfill guard; see the hasPriorActivity check below).
  */
 export function calculateDailyScore(db: Database, dateStr?: string): DailyScore {
   const date = dateStr || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -284,12 +286,19 @@ export function checkAchievements(db: Database): Achievement[] {
       name: "Monk Mode",
       description: "5 zero-spend days in a single month",
       check: () => {
-        const now = new Date();
-        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+        // Whole-table scan grouped by calendar month so Apple backfills of
+        // older months can unlock this. Uses daily_scores.date; rows are only
+        // inserted for days with prior transaction activity (see
+        // calculateDailyScore's hasPriorActivity guard), so partial months
+        // don't get padded with synthetic zero-spend rows.
         const row = db.prepare(
-          `SELECT COUNT(*) as cnt FROM daily_scores WHERE zero_spend = 1 AND date >= ?`
-        ).get(monthStart) as any;
-        return row?.cnt >= 5;
+          `SELECT MAX(cnt) as peak FROM (
+             SELECT COUNT(*) as cnt FROM daily_scores
+             WHERE zero_spend = 1
+             GROUP BY strftime('%Y-%m', date)
+           )`
+        ).get() as any;
+        return row?.peak >= 5;
       },
     },
     {
@@ -297,15 +306,18 @@ export function checkAchievements(db: Database): Achievement[] {
       name: "Debt Crusher",
       description: "$1,000+ paid toward credit card in a single month",
       check: () => {
-        const now = new Date();
-        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+        // Whole-table scan grouped by calendar month so Apple backfills of
+        // older months can unlock this.
         const row = db.prepare(
-          `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-           WHERE account_id IN (SELECT account_id FROM accounts WHERE type = 'credit')
-           AND amount < 0 AND date >= ?
-           AND (category IS NULL OR category != 'TRANSFER_IN')`
-        ).get(monthStart) as any;
-        return row?.total >= 1000;
+          `SELECT MAX(total) as peak FROM (
+             SELECT SUM(ABS(amount)) as total FROM transactions
+             WHERE account_id IN (SELECT account_id FROM accounts WHERE type = 'credit')
+             AND amount < 0
+             AND (category IS NULL OR category != 'TRANSFER_IN')
+             GROUP BY strftime('%Y-%m', date)
+           )`
+        ).get() as any;
+        return row?.peak >= 1000;
       },
     },
     {
@@ -313,16 +325,26 @@ export function checkAchievements(db: Database): Achievement[] {
       name: "Half Marathon",
       description: "Food budget under target for a full month",
       check: () => {
-        const now = new Date();
-        const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().slice(0, 10);
-        const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().slice(0, 10);
         const budget = db.prepare(`SELECT monthly_limit FROM budgets WHERE category = 'FOOD_AND_DRINK'`).get() as any;
         if (!budget) return false;
-        const spent = db.prepare(
-          `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-           WHERE category = 'FOOD_AND_DRINK' AND date BETWEEN ? AND ? AND amount > 0`
-        ).get(lastMonthStart, lastMonthEnd) as any;
-        return spent?.total <= budget.monthly_limit;
+        // Whole-table scan grouped by calendar month so Apple backfills of
+        // older months can unlock this. Month-completeness guard: only count
+        // months whose end date (day 0 of the next month) is strictly before
+        // today, so an in-progress month with trivially low food spend so far
+        // can't unlock the badge. Also excludes months where FOOD_AND_DRINK
+        // spend is 0 (no data at all — treat as incomplete, not as a win).
+        const today = new Date().toISOString().slice(0, 10);
+        const row = db.prepare(
+          `SELECT MIN(total) as best FROM (
+             SELECT strftime('%Y-%m', date) as ym, SUM(amount) as total
+             FROM transactions
+             WHERE category = 'FOOD_AND_DRINK' AND amount > 0
+             GROUP BY ym
+             HAVING total > 0
+               AND date(ym || '-01', '+1 month', '-1 day') < ?
+           )`
+        ).get(today) as any;
+        return row?.best !== null && row?.best !== undefined && row.best <= budget.monthly_limit;
       },
     },
     {
@@ -400,13 +422,18 @@ export function checkAchievements(db: Database): Achievement[] {
       name: "Consistent",
       description: "Average score of 80+ over a full month",
       check: () => {
-        const now = new Date();
-        const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().slice(0, 10);
-        const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().slice(0, 10);
+        // Whole-table scan grouped by calendar month so Apple backfills of
+        // older months can unlock this. HAVING cnt >= 20 acts as the
+        // month-completeness guard (a month with <20 scored days is either
+        // partial data or the in-progress current month before day 20).
         const row = db.prepare(
-          `SELECT AVG(score) as avg_score, COUNT(*) as cnt FROM daily_scores WHERE date BETWEEN ? AND ?`
-        ).get(lastMonthStart, lastMonthEnd) as any;
-        return row?.cnt >= 20 && row?.avg_score >= 80;
+          `SELECT MAX(avg_score) as peak FROM (
+             SELECT AVG(score) as avg_score, COUNT(*) as cnt FROM daily_scores
+             GROUP BY strftime('%Y-%m', date)
+             HAVING cnt >= 20
+           )`
+        ).get() as any;
+        return row?.peak >= 80;
       },
     },
   ];

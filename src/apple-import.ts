@@ -49,6 +49,22 @@ export interface AppleImportResult {
   dateRange: { first: string; last: string } | null;
   replaceWindow: { first: string; last: string } | null;
   balance: number | null;
+  /**
+   * --replace-range only: count of snapshotted user-field rows successfully
+   * restored onto the freshly-inserted rows (either by transaction_id exact
+   * match or by a unique (date, amount, merchant) fallback). Null under
+   * regular inserts (no snapshot pass runs).
+   */
+  preservedCount: number | null;
+  /**
+   * --replace-range only: count of snapshotted rows that couldn't be
+   * re-applied — either because the row isn't in the re-import (semantic
+   * transaction gone) or the fallback match was ambiguous (multiple
+   * candidates with the same date/amount/merchant but the snapshot's
+   * transaction_id no longer exists). Each dropped row produces one
+   * entry in `warnings`. Null under regular inserts.
+   */
+  droppedCount: number | null;
 }
 
 interface ParsedRow {
@@ -178,9 +194,45 @@ export function parseCsv(text: string): string[][] {
   return rows;
 }
 
+/**
+ * Parse Apple's MM/DD/YYYY export format and return a well-formed
+ * YYYY-MM-DD ISO string, or null for anything malformed.
+ *
+ * Strict calendar validation: the regex shape-check alone would accept
+ * `13/40/2026` or `02/31/2026` as structurally valid, producing ISO
+ * strings like `2026-13-40`. Downstream consumers propagate those bad
+ * values with silent corruption (JS `Date` normalizes 2026-02-31 to
+ * 2026-03-03; scoring's cursor math produces NaN on a truly impossible
+ * date and throws RangeError in runDailySync) or amplify the damage
+ * (--replace-range's lexical-sorted BETWEEN clause with a bogus boundary
+ * date nukes a wider window than the CSV actually covered). Round-trip
+ * verification via Date.UTC rejects calendar-impossible dates (Feb 31,
+ * Apr 31, etc.) and leap-year mismatches (Feb 29 2025) while accepting
+ * legitimate leap-year dates (Feb 29 2024).
+ */
 function parseDate(mdy: string): string | null {
   const m = mdy.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
   if (!m) return null;
+  const month = parseInt(m[1], 10);
+  const day = parseInt(m[2], 10);
+  const year = parseInt(m[3], 10);
+  // Fast pre-check: Date.UTC silently normalizes month=0 or month=13 into
+  // adjacent years rather than rejecting them, so catch out-of-range values
+  // before constructing the Date. Zero day would also normalize to the
+  // previous month's last day.
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > 31) return null;
+  const d = new Date(Date.UTC(year, month - 1, day));
+  // Round-trip verification: if the constructed UTC date's fields don't
+  // match the inputs, the JS Date normalized an invalid date (e.g.
+  // Feb 31 → Mar 3, Apr 31 → May 1, Feb 29 in a non-leap year → Mar 1).
+  if (
+    d.getUTCFullYear() !== year ||
+    d.getUTCMonth() !== month - 1 ||
+    d.getUTCDate() !== day
+  ) {
+    return null;
+  }
   return `${m[3]}-${m[1]}-${m[2]}`;
 }
 
@@ -443,6 +495,8 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
       dateRange: null,
       replaceWindow: null,
       balance: null,
+      preservedCount: null,
+      droppedCount: null,
     };
   }
 
@@ -490,6 +544,8 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
       dateRange: { first, last },
       replaceWindow: { first: replaceFirst, last: replaceLast },
       balance: opts.balance ?? getAppleAccountBalance(db),
+      preservedCount: null,
+      droppedCount: null,
     };
   }
 
@@ -498,6 +554,8 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
   let rowsDeleted = 0;
   let rowsInserted = 0;
   let rowsSkipped = 0;
+  let preservedCount = 0;
+  let droppedCount = 0;
 
   const insertInst = db.prepare(
     `INSERT INTO institutions (item_id, access_token, name, products)
@@ -568,17 +626,33 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
 
   // Snapshot user-applied edits (note/label/category/subcategory) on rows we
   // are about to DELETE under --replace-range so we can re-apply them onto
-  // the newly inserted rows that hash to the same transaction_id. Without
-  // this, a re-import would silently drop notes/labels the user wrote via
-  // `ray label-transaction` or the AI tool, and any manual recategorization
-  // would revert to the Apple-source category on every re-run.
-  let preserved: { transaction_id: string; note: string | null; label: string | null; category: string | null; subcategory: string | null }[] = [];
+  // the newly inserted rows. The primary match is by transaction_id (exact
+  // re-import of the same row), with a fallback by (account_id, date,
+  // amount, merchant_name) within the replace window: Apple sometimes
+  // retroactively refines a row's description, which changes the hashed
+  // transaction_id but leaves the semantic event identical. Without the
+  // fallback, every description refinement silently drops the user's note /
+  // label / manual recategorization — exactly the case `--replace-range`
+  // is supposed to handle per CHANGELOG.md. We also snapshot the shape
+  // fields (date/amount/merchant) so the fallback can run in JS after the
+  // DELETE has already removed the old row.
+  interface PreservedRow {
+    transaction_id: string;
+    date: string;
+    amount: number;
+    merchant_name: string | null;
+    note: string | null;
+    label: string | null;
+    category: string | null;
+    subcategory: string | null;
+  }
+  let preserved: PreservedRow[] = [];
   if (opts.replaceRange) {
     preserved = db.prepare(
-      `SELECT transaction_id, note, label, category, subcategory FROM transactions
+      `SELECT transaction_id, date, amount, merchant_name, note, label, category, subcategory FROM transactions
        WHERE account_id = ? AND date BETWEEN ? AND ?
          AND (note IS NOT NULL OR label IS NOT NULL OR category IS NOT NULL OR subcategory IS NOT NULL)`
-    ).all(ACCOUNT_ID, replaceFirst, replaceLast) as typeof preserved;
+    ).all(ACCOUNT_ID, replaceFirst, replaceLast) as PreservedRow[];
   }
 
   // Uniform "snapshot wins" semantics for all four user-editable columns:
@@ -599,6 +673,19 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
             category    = COALESCE(?, category),
             subcategory = COALESCE(?, subcategory)
       WHERE transaction_id = ?`
+  );
+
+  // Candidate lookup for the (date, amount, merchant) fallback path:
+  // Apple sometimes refines a row's description between exports, which
+  // changes the hashed transaction_id even though the semantic event is
+  // the same. Exact-id match will miss those rows, so this query pulls
+  // any freshly-inserted rows that share the shape fields; we apply
+  // the snapshot only when exactly one candidate matches (ambiguous
+  // matches emit a warning and skip).
+  const findCandidates = db.prepare(
+    `SELECT transaction_id FROM transactions
+     WHERE account_id = ? AND date = ? AND amount = ?
+       AND ((merchant_name IS NULL AND ? IS NULL) OR merchant_name = ?)`
   );
 
   const work = db.transaction(() => {
@@ -648,14 +735,63 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
       else rowsSkipped++;
     }
 
-    // Re-apply snapshotted user fields to any re-inserted rows that share the
-    // same transaction_id. `restoreUserFields` uses snapshot-wins COALESCE for
-    // every column — a user edit on any of note/label/category/subcategory
-    // made before --replace-range survives the re-import, and rows the user
-    // never touched keep whatever the fresh INSERT wrote.
+    // Re-apply snapshotted user fields onto the freshly-inserted rows.
+    // Strategy:
+    //   1. Try exact transaction_id match (fast path; covers unchanged
+    //      descriptions).
+    //   2. If no row matched, fall back to (account_id, date, amount,
+    //      merchant_name) — Apple's description refinements change the
+    //      hashed id but leave those shape fields identical. Apply the
+    //      restore only when exactly one candidate matches; 0 matches
+    //      means the semantic row is gone from the re-import (user's
+    //      edit is dropped), >1 matches means indistinguishable
+    //      same-day/same-merchant/same-amount events where we can't
+    //      know which one the note/label belongs to.
+    //   3. Each dropped or ambiguous row produces a warning entry so the
+    //      user can re-apply manually.
+    // `restoreUserFields` uses snapshot-wins COALESCE for every column —
+    // a user edit on any of note/label/category/subcategory made before
+    // --replace-range survives the re-import, and rows the user never
+    // touched keep whatever the fresh INSERT wrote.
     if (opts.replaceRange && preserved.length > 0) {
       for (const p of preserved) {
-        restoreUserFields.run(p.note, p.label, p.category, p.subcategory, p.transaction_id);
+        const exact = restoreUserFields.run(p.note, p.label, p.category, p.subcategory, p.transaction_id);
+        if (Number(exact.changes) === 1) {
+          preservedCount++;
+          continue;
+        }
+        // Fallback: match by shape. merchant_name can be NULL, so the
+        // prepared statement uses a double-binding trick: both `?` positions
+        // receive the same value (for the IS NULL branch and the equality
+        // branch respectively).
+        const candidates = findCandidates.all(
+          ACCOUNT_ID,
+          p.date,
+          p.amount,
+          p.merchant_name,
+          p.merchant_name
+        ) as { transaction_id: string }[];
+        if (candidates.length === 1) {
+          restoreUserFields.run(
+            p.note,
+            p.label,
+            p.category,
+            p.subcategory,
+            candidates[0].transaction_id
+          );
+          preservedCount++;
+          continue;
+        }
+        // 0 or >1 candidates — can't safely re-apply. Record the loss
+        // so the caller can surface it.
+        droppedCount++;
+        const merchantLabel = p.merchant_name ?? "(no merchant)";
+        const reason = candidates.length === 0
+          ? "no matching row after re-import"
+          : `${candidates.length} ambiguous matches`;
+        warnings.push(
+          `Preserved note/label for ${p.date} ${merchantLabel} ${p.amount} dropped: ${reason}.`
+        );
       }
     }
   });
@@ -672,5 +808,7 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
     dateRange: { first, last },
     replaceWindow: { first: replaceFirst, last: replaceLast },
     balance: opts.balance ?? getAppleAccountBalance(db),
+    preservedCount: opts.replaceRange ? preservedCount : null,
+    droppedCount: opts.replaceRange ? droppedCount : null,
   };
 }

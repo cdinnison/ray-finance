@@ -2,7 +2,7 @@ import type Database from "libsql";
 import { config } from "../config.js";
 import { getMemories } from "./memory.js";
 import { readContext, isContextEmpty } from "./context.js";
-import { computeInsights } from "./insights.js";
+import { computeInsights, stripControls } from "./insights.js";
 
 export function buildSystemPrompt(db: Database.Database): string {
   const memories = getMemories(db);
@@ -109,7 +109,14 @@ This onboarding block will automatically disappear once the context file is fill
 
   if (memories.length > 0) {
     prompt += `\n\n## Things I remember about ${name}\n`;
-    prompt += memories.map(m => `- ${m.content}`).join("\n");
+    // Memory content is user-typed (via save_memory) and lands ABOVE the
+    // "Current Financial Briefing" preamble that flags external strings as
+    // untrusted data — the highest-leverage injection surface in this prompt.
+    // Strip control characters so a crafted memory can't use a newline to
+    // break out of its data context; keep the full length (no 80-char clip)
+    // because legitimate memories can run long and truncation would be
+    // user-visible data loss.
+    prompt += memories.map(m => `- ${stripControls(m.content)}`).join("\n");
   }
 
   return prompt;

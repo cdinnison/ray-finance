@@ -347,7 +347,10 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
     case "get_accounts": {
       const accounts = getAccountBalances(db);
       if (accounts.length === 0) return "No accounts linked yet.";
-      return accounts.map(a => `${a.name} (${a.type}): ${["credit", "loan"].includes(a.type) ? "-" : ""}${formatMoney(a.balance)}`).join("\n");
+      // Account names are user-controllable (via `ray add`, institution-
+      // supplied Plaid names are effectively untrusted too) — sanitize
+      // before interpolating into the tool output that feeds back to the LLM.
+      return accounts.map(a => `${sanitizeForPrompt(a.name)} (${a.type}): ${["credit", "loan"].includes(a.type) ? "-" : ""}${formatMoney(a.balance)}`).join("\n");
     }
 
     case "get_transactions": {
@@ -407,8 +410,10 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
     case "get_goals": {
       const goals = getGoals(db);
       if (goals.length === 0) return "No goals set up yet. Use set_goal to create one.";
+      // Goal names come from user input (set_goal / CLI). Sanitize before
+      // interpolating into the LLM-bound tool output.
       return goals.map(g => {
-        let line = `${g.name}: ${formatMoney(g.current)} / ${formatMoney(g.target)} (${g.progress_pct}%)`;
+        let line = `${sanitizeForPrompt(g.name)}: ${formatMoney(g.current)} / ${formatMoney(g.target)} (${g.progress_pct}%)`;
         if (g.target_date) line += ` — target: ${g.target_date}`;
         if (g.monthly_needed > 0) line += ` — need ${formatMoney(g.monthly_needed)}/mo`;
         return line;
@@ -472,7 +477,14 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
     case "get_memories": {
       const memories = getMemories(db);
       if (memories.length === 0) return "No memories saved yet.";
-      return memories.map(m => `[${m.category}] ${m.content} (saved ${m.created_at})`).join("\n");
+      // Memory content is user-typed (via save_memory). sanitizeForPrompt
+      // clips control chars AND truncates at 80 chars — memories can
+      // legitimately exceed 80 chars, so use a dedicated control-strip
+      // helper via sanitizeForPrompt's 80-char clip on this tool output
+      // is acceptable (the model can see "..." and re-ask if it needs the
+      // full memory). The defense is against control chars / newlines that
+      // would let crafted content inject instructions, not against length.
+      return memories.map(m => `[${m.category}] ${sanitizeForPrompt(m.content)} (saved ${m.created_at})`).join("\n");
     }
 
     // --- New: Income & Search ---
@@ -485,7 +497,10 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       if (sources.length === 0) return `No income found from ${start} to ${end}.`;
       const total = sources.reduce((s, r) => s + r.total, 0);
       let result = `Income ${start} to ${end}: ${formatMoney(total)} total\n\n`;
-      result += sources.map(s => `${s.source}: ${formatMoney(s.total)} (${s.count} deposits)`).join("\n");
+      // `s.source` is COALESCE(merchant_name, name) — both are
+      // user-controllable via CSV import / bank feeds. Sanitize before
+      // interpolating into the LLM-bound tool output.
+      result += sources.map(s => `${sanitizeForPrompt(s.source)}: ${formatMoney(s.total)} (${s.count} deposits)`).join("\n");
       return result;
     }
 
@@ -587,7 +602,9 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       result += ` | Cost basis: ${formatMoney(port.totalCostBasis)} | Gain/Loss: ${port.totalGainLoss >= 0 ? "+" : ""}${formatMoney(port.totalGainLoss)}`;
       result += `\n\nHoldings:`;
       for (const h of port.holdings) {
-        result += `\n${h.ticker || h.security} (${h.account}): ${formatMoney(h.value)} | ${h.quantity} shares | G/L: ${h.gainLoss >= 0 ? "+" : ""}${formatMoney(h.gainLoss)}`;
+        // Ticker + security name + account name all flow from broker-supplied
+        // data / user account names — sanitize before LLM interpolation.
+        result += `\n${sanitizeForPrompt(h.ticker || h.security)} (${sanitizeForPrompt(h.account)}): ${formatMoney(h.value)} | ${h.quantity} shares | G/L: ${h.gainLoss >= 0 ? "+" : ""}${formatMoney(h.gainLoss)}`;
       }
       return result;
     }
@@ -598,7 +615,7 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       let result = `Total return: ${perf.totalReturn >= 0 ? "+" : ""}${formatMoney(perf.totalReturn)} (${perf.totalReturnPct >= 0 ? "+" : ""}${perf.totalReturnPct}%)`;
       result += `\n\nBy holding:`;
       for (const h of perf.holdings) {
-        result += `\n${h.ticker || h.security}: ${formatMoney(h.value)} (cost: ${formatMoney(h.costBasis)}, return: ${h.returnPct >= 0 ? "+" : ""}${h.returnPct}%)`;
+        result += `\n${sanitizeForPrompt(h.ticker || h.security)}: ${formatMoney(h.value)} (cost: ${formatMoney(h.costBasis)}, return: ${h.returnPct >= 0 ? "+" : ""}${h.returnPct}%)`;
       }
       return result;
     }
@@ -610,7 +627,10 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       if (d.debts.length === 0) return "No debts found.";
       let result = `Total debt: ${formatMoney(d.totalDebt)}\n`;
       for (const debt of d.debts) {
-        result += `\n${debt.name}: ${formatMoney(debt.balance)}`;
+        // Debt names come from accounts.name (user-controllable) — sanitize
+        // before interpolating into the LLM-bound tool output so a crafted
+        // name can't inject instructions into the model's context.
+        result += `\n${sanitizeForPrompt(debt.name)}: ${formatMoney(debt.balance)}`;
         // rate === null means APR is genuinely unknown (e.g. Apple Card
         // imported from CSV — Apple doesn't export APR). Surface "APR
         // unknown" explicitly so the model doesn't silently treat it as 0%
@@ -637,12 +657,15 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       // into deprioritizing real expensive debt.
       const ASSUMED_UNKNOWN_APR = 20;
 
-      // Sort debts by strategy. For avalanche, treat rate===null as the
-      // assumed retail APR so unknown-rate cards rank alongside high-rate
-      // debts rather than sinking to the bottom with 0% promotional cards.
+      // Sort debts by strategy. For avalanche, treat rate===null as Infinity
+      // for sort (so null-rate debts fall to the bottom like getDebts's
+      // queries/index.ts ordering) — this keeps small unknown-rate retail
+      // cards from jumping ahead of legitimately-high-rate debts. The
+      // simulation loop still applies ASSUMED_UNKNOWN_APR to rows it does
+      // simulate; this sort change only affects ordering.
       const sorted = [...d.debts].filter(debt => debt.balance > 0);
       if (strategy === "avalanche") {
-        sorted.sort((a, b) => (b.rate ?? ASSUMED_UNKNOWN_APR) - (a.rate ?? ASSUMED_UNKNOWN_APR));
+        sorted.sort((a, b) => (b.rate ?? -Infinity) - (a.rate ?? -Infinity));
       } else if (strategy === "snowball") {
         sorted.sort((a, b) => a.balance - b.balance);
       }
@@ -655,13 +678,27 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
 
       for (const debt of sorted) {
         if (debt.rate === 0 && debt.minPayment === 0) {
-          result += `\n${debt.name}: ${formatMoney(debt.balance)} — no rate/payment info available`;
+          result += `\n${sanitizeForPrompt(debt.name)}: ${formatMoney(debt.balance)} — no rate/payment info available`;
           continue;
         }
-        // rate === null: APR unknown (e.g. Apple CSV import). Simulate at the
-        // retail-card assumption and flag the row so the model knows the
-        // resulting payoff estimate depends on an assumption it should either
-        // surface or ask the user to confirm.
+        // rate === null: APR is genuinely unknown. Simulating at a
+        // retail-card assumption (~20%) is only defensible for small
+        // credit-card-shaped debts — extrapolating a $350k mortgage at
+        // 20% and $50/mo synthesized payment produces fabricated $3.5M
+        // interest over a fake 600-month timeline that the LLM would
+        // then cite. Tighten the guard so null-rate debts that look
+        // like loans (non-credit type, or large balance, or zero
+        // minimum) skip with an honest "unknown" note instead. Apple
+        // Card-shaped rows (rate=null, type=credit, small balance) with
+        // minPayment<=0 also skip now — the previous code fabricated a
+        // $50/mo simulation for those too.
+        if (
+          debt.rate == null &&
+          (debt.minPayment <= 0 || debt.type !== "credit" || debt.balance > 50000)
+        ) {
+          result += `\n${sanitizeForPrompt(debt.name)} (${debt.type}): ${formatMoney(debt.balance)} — APR and/or minimum payment unknown; cannot simulate payoff. Ask the user for the APR and monthly payment.`;
+          continue;
+        }
         const effectiveRate = debt.rate ?? ASSUMED_UNKNOWN_APR;
         const rateNote = debt.rate == null ? ` (APR unknown — assumed ~${ASSUMED_UNKNOWN_APR}% for simulation)` : "";
         const payment = Math.max(debt.minPayment, 50) + (sorted.indexOf(debt) === 0 ? extraMonthly : 0);
@@ -671,7 +708,7 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
 
         const payoffDate = new Date();
         payoffDate.setMonth(payoffDate.getMonth() + sim.months);
-        result += `\n${debt.name}: ${formatMoney(debt.balance)} @ ${effectiveRate}%${rateNote}`;
+        result += `\n${sanitizeForPrompt(debt.name)}: ${formatMoney(debt.balance)} @ ${effectiveRate}%${rateNote}`;
         result += ` → ${sim.months} months (${payoffDate.toISOString().slice(0, 7)})`;
         result += ` | ${formatMoney(sim.totalInterest)} interest | ${formatMoney(payment)}/mo`;
       }

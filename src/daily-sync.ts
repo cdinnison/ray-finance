@@ -193,10 +193,12 @@ export async function runDailySync(
   // backfill + yesterday's score) in a single db.transaction so a mid-loop
   // failure (e.g. calculateDailyScore throwing on a long backfill after a
   // gap) rolls back the whole derivation rather than leaving partial
-  // daily_scores rows + a stale net-worth snapshot behind while runSync's
-  // catch prints "Sync failed" and calls process.exit(1). Matches the
-  // cleanupDerivedAfterRemove pattern at cli/commands.ts:612 and the
-  // post-import wrap in runImportApple.
+  // daily_scores rows + a stale net-worth snapshot behind. The throw is
+  // caught at the call site and degraded to logger.error so runSync's
+  // catch doesn't mispresent a successful Plaid pull (transactions already
+  // committed per-institution above) as "Sync failed" just because the
+  // tail failed. Matches the cleanupDerivedAfterRemove pattern in
+  // cli/commands.ts and the post-import wrap in runImportApple.
   const work = db.transaction(() => {
     // Snapshot net worth
     const { assets, liabilities, netWorth } = snapshotNetWorth(db);
@@ -238,7 +240,17 @@ export async function runDailySync(
     const dailyScore = calculateDailyScore(db, yesterday);
     logger.log(`  Daily score (${yesterday}): ${dailyScore.score}/100`);
   });
-  work();
+  try {
+    work();
+  } catch (err: any) {
+    // Transactions were still pulled and saved to the DB by the per-institution
+    // loop above — those commits ran independently of this derivation tail.
+    // Degrade to logger.error so runSync's outer catch doesn't convert a
+    // post-sync derivation failure into a "Sync failed" + process.exit(1)
+    // that falsely implies the Plaid pull itself failed.
+    logger.error(`Post-sync derivation failed: ${(err && err.message) || String(err)}`);
+    logger.error(`  (Transactions were still pulled and saved.)`);
+  }
 
   // checkAchievements is non-fatal bonus output — keep it OUTSIDE the
   // transaction above so a throw here neither silently commits nor

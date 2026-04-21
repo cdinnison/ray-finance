@@ -39,7 +39,7 @@ export function applyRecategorizationRules(db: Database, logger: SyncLogger = co
     match_pattern: string;
     target_category: string;
     target_subcategory: string | null;
-    label: string;
+    label: string | null;
   }[];
 
   let rulesSkipped = 0;

@@ -25,6 +25,20 @@ export function sanitizeForPrompt(s: string | null | undefined): string {
   return stripped.length > 80 ? stripped.slice(0, 80) + "…" : stripped;
 }
 
+/**
+ * Strip control characters from a user-controlled string without truncating.
+ * Used for content interpolations where length matters (e.g. saved memories
+ * injected into the system prompt), so the injection defense still runs but
+ * legitimate long-form text isn't clipped. The control-char strip is the
+ * load-bearing part of prompt-injection defense — a newline or tab in the
+ * middle of "user" text is what lets a crafted payload break out of its
+ * data context and be parsed by the model as a directive.
+ */
+export function stripControls(s: string | null | undefined): string {
+  if (s == null) return "";
+  return String(s).replace(/[\x00-\x1f\x7f]+/g, " ").replace(/ {2,}/g, " ").trim();
+}
+
 export function computeInsights(db: Database.Database): string {
   // Fresh install guard
   const txCount = db.prepare(`SELECT COUNT(*) as cnt FROM transactions`).get() as { cnt: number };
@@ -86,11 +100,13 @@ function buildSnapshot(db: Database.Database): string {
   }
   lines.push(nwLine);
 
-  // Account balances — cap at 5
+  // Account balances — cap at 5. Account names are user-controllable (via
+  // `ray add`, and institution-supplied Plaid names are effectively
+  // untrusted too); sanitize before interpolating into the LLM-bound string.
   const accounts = getAccountBalances(db).slice(0, 5);
   if (accounts.length > 0) {
     lines.push(accounts.map(a =>
-      `${a.name} (${a.type}): ${["credit", "loan"].includes(a.type) ? "-" : ""}${formatMoney(a.balance)}`
+      `${sanitizeForPrompt(a.name)} (${a.type}): ${["credit", "loan"].includes(a.type) ? "-" : ""}${formatMoney(a.balance)}`
     ).join(" | "));
   }
 
@@ -114,7 +130,10 @@ function buildSnapshot(db: Database.Database): string {
     // liability` entries also lack a stored rate.
     const unknownRateDebts = debts.debts.filter(d => d.rate == null);
     if (unknownRateDebts.length > 0) {
-      const names = unknownRateDebts.map(d => d.name).join(", ");
+      // Debt names come from accounts.name (user-controllable via
+      // `ray add`, institution-supplied via Plaid). Sanitize before
+      // interpolating so a crafted name can't inject instructions.
+      const names = unknownRateDebts.map(d => sanitizeForPrompt(d.name)).join(", ");
       lines.push(
         `Note: ${unknownRateDebts.length} debt(s) have unknown APR (${names}) — assume retail-card rate (~20%) when prioritizing payoff, or ask the user to confirm.`
       );
@@ -134,6 +153,9 @@ function buildSpending(db: Database.Database): string {
 
   // This month's total spending. NULL-safe category filter so Apple rows with
   // no mapped category (apple-import.ts CATEGORY_MAP NULL cases) are counted.
+  // compareSpending below is also NULL-inclusive (coalescing NULL into the
+  // 'Other' bucket in JS), so thisMonthSpend and cmp.* reference the same
+  // row set.
   const thisMonthSpend = db.prepare(
     `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
      WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
@@ -202,8 +224,10 @@ function buildGoals(db: Database.Database): string | null {
   const active = goals.filter(g => g.progress_pct < 100);
   if (active.length === 0) return null;
 
+  // Goal names come from user input via `ray set-goal` / AI set_goal tool —
+  // sanitize before interpolating into the LLM-bound briefing.
   const lines = active.slice(0, 3).map(g => {
-    let line = `${g.name}: ${formatMoney(g.current)} / ${formatMoney(g.target)} (${g.progress_pct}%)`;
+    let line = `${sanitizeForPrompt(g.name)}: ${formatMoney(g.current)} / ${formatMoney(g.target)} (${g.progress_pct}%)`;
     if (g.target_date) {
       line += ` — need ${formatMoney(g.monthly_needed)}/mo`;
     }
@@ -219,11 +243,13 @@ function buildUpcoming(db: Database.Database): string | null {
   const bills = getUpcomingBills(db, 7);
   const today = startOfUtcDay(new Date());
   if (bills.length > 0) {
+    // Bill names/notes flow from recurring stream detection (merchant names)
+    // and user-edited account labels — sanitize before LLM interpolation.
     const billStrs = bills.slice(0, 5).map(b => {
       const daysUntil = Math.round((b.date.getTime() - today.getTime()) / 86400000);
       const amt = formatMoney(b.amount);
-      const extra = b.note ? ` ${b.note}` : "";
-      return `${b.name} (${amt}${extra}) due in ${daysUntil} days`;
+      const extra = b.note ? ` ${sanitizeForPrompt(b.note)}` : "";
+      return `${sanitizeForPrompt(b.name)} (${amt}${extra}) due in ${daysUntil} days`;
     });
     parts.push(`UPCOMING: ${billStrs.join(", ")}`);
   }
@@ -241,7 +267,8 @@ function buildUpcoming(db: Database.Database): string | null {
   ).all(avgMonthlyExpenses.avg) as { name: string; current_balance: number }[];
 
   for (const a of lowAccounts.slice(0, 2)) {
-    parts.push(`LOW BALANCE: ${a.name} at ${formatMoney(a.current_balance)} (below 1 month of avg expenses)`);
+    // Account names are user-controllable — sanitize before LLM interpolation.
+    parts.push(`LOW BALANCE: ${sanitizeForPrompt(a.name)} at ${formatMoney(a.current_balance)} (below 1 month of avg expenses)`);
   }
 
   // Credit utilization
@@ -255,7 +282,7 @@ function buildUpcoming(db: Database.Database): string | null {
     if (limit > 0) {
       const utilization = card.current_balance / limit;
       if (utilization > 0.3) {
-        parts.push(`CREDIT: ${card.name} at ${Math.round(utilization * 100)}% utilization (${formatMoney(card.current_balance)} / ${formatMoney(limit)} limit)`);
+        parts.push(`CREDIT: ${sanitizeForPrompt(card.name)} at ${Math.round(utilization * 100)}% utilization (${formatMoney(card.current_balance)} / ${formatMoney(limit)} limit)`);
       }
     }
   }
@@ -348,7 +375,10 @@ export function cliBriefing(db: Database.Database): string | null {
   }
   lines.push("");
 
-  // Spending vs last month
+  // Spending vs last month. compareSpending below is NULL-inclusive (coalescing
+  // NULL into the 'Other' bucket in JS), so thisMonthSpend and cmp.* share
+  // the same row set — the headline total and the comparison arrow reference
+  // the same spend universe.
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const today = now.toISOString().slice(0, 10);
   const thisMonthSpend = db.prepare(
@@ -483,7 +513,9 @@ function buildScore(db: Database.Database): string | null {
     `SELECT name FROM achievements ORDER BY unlocked_at DESC LIMIT 3`
   ).all() as { name: string }[];
   if (achievements.length > 0) {
-    line += ` | Recent: ${achievements.map(a => a.name).join(", ")}`;
+    // Achievement names are hardcoded in scoring/index.ts but sanitize
+    // defensively — the cost is nil and the pattern consistency matters.
+    line += ` | Recent: ${achievements.map(a => sanitizeForPrompt(a.name)).join(", ")}`;
   }
 
   return line;
