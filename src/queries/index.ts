@@ -35,6 +35,12 @@ export interface TransactionFilters {
   endDate?: string;
   category?: string;
   merchant?: string;
+  // Case-insensitive substring match against accounts.name. Lets callers
+  // scope queries to one account (e.g. "Apple Card") — load-bearing for the
+  // AI's ability to answer "what's on my Apple Card?" after Apple-CSV
+  // imports, whose rows have everyday-merchant names and no bank-flavored
+  // string in name/merchant to disambiguate source from Plaid rows.
+  accountName?: string;
   minAmount?: number;
   maxAmount?: number;
   limit?: number;
@@ -245,43 +251,60 @@ export function getRecentTransactions(
 export function getTransactionsFiltered(
   db: Database,
   filters: TransactionFilters
-): { transaction_id: string; name: string; merchant_name: string | null; amount: number; category: string; date: string; pending: number }[] {
+): { transaction_id: string; account_id: string; account_name: string | null; name: string; merchant_name: string | null; amount: number; category: string; date: string; pending: number }[] {
   const conditions: string[] = [];
   const params: any[] = [];
 
   if (filters.startDate) {
-    conditions.push(`date >= ?`);
+    conditions.push(`t.date >= ?`);
     params.push(filters.startDate);
   }
   if (filters.endDate) {
-    conditions.push(`date <= ?`);
+    conditions.push(`t.date <= ?`);
     params.push(filters.endDate);
   }
   if (filters.category) {
-    conditions.push(`(category = ? OR subcategory = ?)`);
+    conditions.push(`(t.category = ? OR t.subcategory = ?)`);
     params.push(filters.category, filters.category);
   }
   if (filters.merchant) {
-    conditions.push(`(merchant_name LIKE ? OR name LIKE ?)`);
+    conditions.push(`(t.merchant_name LIKE ? OR t.name LIKE ?)`);
     params.push(`%${filters.merchant}%`, `%${filters.merchant}%`);
   }
+  if (filters.accountName) {
+    // Case-insensitive substring match against `accounts.name` — the label
+    // the user sees ("Apple Card", "Investor Checking ••2566", ...). LOWER
+    // on both sides since SQLite's default LIKE is case-insensitive only
+    // for ASCII; defensive for account names with accented/special chars
+    // (e.g. "Blue Cash Everyday®"). LEFT JOIN below keeps any orphan
+    // transaction visible with account_name=NULL rather than silently
+    // dropping it from results.
+    conditions.push(`LOWER(a.name) LIKE LOWER(?)`);
+    params.push(`%${filters.accountName}%`);
+  }
   if (filters.minAmount !== undefined) {
-    conditions.push(`amount >= ?`);
+    conditions.push(`t.amount >= ?`);
     params.push(filters.minAmount);
   }
   if (filters.maxAmount !== undefined) {
-    conditions.push(`amount <= ?`);
+    conditions.push(`t.amount <= ?`);
     params.push(filters.maxAmount);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
   const limit = filters.limit || 50;
 
+  // LEFT JOIN so transactions with a missing-but-referenced account row
+  // (shouldn't happen under FK enforcement, but defensive) still surface
+  // with account_name=NULL instead of silently disappearing.
   return db
     .prepare(
-      `SELECT transaction_id, name, merchant_name, amount, category, date, pending
-       FROM transactions ${where}
-       ORDER BY date DESC, amount DESC LIMIT ?`
+      `SELECT t.transaction_id, t.account_id, a.name AS account_name,
+              t.name, t.merchant_name, t.amount, t.category, t.date, t.pending
+       FROM transactions t
+       LEFT JOIN accounts a ON t.account_id = a.account_id
+       ${where}
+       ORDER BY t.date DESC, t.amount DESC LIMIT ?`
     )
     .all(...params, limit) as any[];
 }

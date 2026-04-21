@@ -259,6 +259,50 @@ describe("getTransactionsFiltered", () => {
     const txns = getTransactionsFiltered(db, { limit: 1 });
     expect(txns.length).toBe(1);
   });
+
+  it("populates account_name and account_id on every returned row (JOIN sanity)", () => {
+    // Load-bearing for the AI's transaction-by-account capability: without
+    // account_name on each row, the model can't distinguish Apple Card rows
+    // from Plaid rows that share a generic merchant shape.
+    const rows = getTransactionsFiltered(db, {});
+    expect(rows.length).toBe(3);
+    for (const r of rows) {
+      // beforeEach seeds account "a" (the id doubles as the name default).
+      expect(r.account_id).toBe("a");
+      expect(r.account_name).toBe("a");
+    }
+  });
+
+  it("filters by accountName (case-insensitive partial match) across multiple accounts", () => {
+    // Add a second account + transaction to prove the filter actually
+    // scopes — not just a pass-through that ignores the filter.
+    seedAccount(db, { id: "apple", type: "credit", balance: 1000, name: "Apple Card" });
+    seedTransaction(db, { id: "t-apple", accountId: "apple", amount: 22.79, date: "2025-03-01", name: "Poke Tiki Costa Mesa", category: "FOOD_AND_DRINK" });
+
+    const exact = getTransactionsFiltered(db, { accountName: "Apple Card" });
+    expect(exact.map(t => t.transaction_id)).toEqual(["t-apple"]);
+    expect(exact[0].account_name).toBe("Apple Card");
+
+    // Partial substring.
+    const partial = getTransactionsFiltered(db, { accountName: "apple" });
+    expect(partial.map(t => t.transaction_id)).toEqual(["t-apple"]);
+
+    // Case-insensitive (SQLite's default LIKE is ASCII-case-insensitive, but
+    // the query uses LOWER() on both sides for defensiveness against
+    // accented/special characters — this test pins the contract).
+    const upper = getTransactionsFiltered(db, { accountName: "APPLE" });
+    expect(upper.map(t => t.transaction_id)).toEqual(["t-apple"]);
+
+    // Non-matching filter returns empty array, not all rows.
+    const none = getTransactionsFiltered(db, { accountName: "Nonexistent Bank" });
+    expect(none).toEqual([]);
+
+    // Filter on the other account still returns its rows.
+    const other = getTransactionsFiltered(db, { accountName: "a" });
+    // Both "a" (exact) and "Apple Card" (contains 'a') match the LIKE '%a%'
+    // pattern. Beyond trivial here — the contract is substring, not exact.
+    expect(other.length).toBeGreaterThanOrEqual(3);
+  });
 });
 
 describe("searchTransactions", () => {

@@ -12,7 +12,6 @@ import { getLatestScore, getMonthlySavings } from "../scoring/index.js";
 import { generateAlerts } from "../alerts/index.js";
 import { saveMemory, getMemories } from "./memory.js";
 import { readContext, writeContext, replaceContextSection } from "./context.js";
-import { simulatePayoff } from "../db/helpers.js";
 import { sanitizeForPrompt } from "./insights.js";
 
 export const toolDefinitions: ToolDefinition[] = [
@@ -29,7 +28,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: "get_transactions",
-    description: "Search transactions with optional filters. Returns matching transactions.",
+    description: "Search transactions with optional filters (date range, category, merchant, account, amount). Returns matching transactions with their originating account name, which lets you scope questions to a single account (e.g. 'what did I spend on my Apple Card?').",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -37,6 +36,7 @@ export const toolDefinitions: ToolDefinition[] = [
         end_date: { type: "string", description: "End date (YYYY-MM-DD). Defaults to today." },
         category: { type: "string", description: "Filter by category (e.g. FOOD_AND_DRINK, GENERAL_MERCHANDISE)" },
         merchant: { type: "string", description: "Filter by merchant name (partial match)" },
+        account: { type: "string", description: "Filter by account name (partial, case-insensitive match against the names shown by get_accounts — e.g. 'Apple Card', 'Investor Checking')" },
         min_amount: { type: "number", description: "Minimum transaction amount" },
         max_amount: { type: "number", description: "Maximum transaction amount" },
         limit: { type: "number", description: "Max results to return (default 20)" },
@@ -359,14 +359,21 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
         endDate: toolInput.end_date,
         category: toolInput.category,
         merchant: toolInput.merchant,
+        accountName: toolInput.account,
         minAmount: toolInput.min_amount,
         maxAmount: toolInput.max_amount,
         limit: toolInput.limit,
       });
       if (txns.length === 0) return "No transactions found matching those filters.";
-      // Sanitize user-controlled text (name, merchant) so an injected
-      // instruction in a merchant field can't smuggle directives to the model.
-      return txns.map(t => `${t.date} | ${sanitizeForPrompt(t.name)} | ${formatMoney(t.amount)} | ${categoryLabel(t.category)}`).join("\n");
+      // Sanitize user-controlled text (account name, transaction name, merchant)
+      // so an injected instruction can't smuggle directives to the model.
+      // account_name is load-bearing for Apple-import: without it the model
+      // can't distinguish Apple Card rows from Plaid rows when both feeds
+      // share a generic merchant shape (e.g. "Poke Tiki Costa Mesa"). Falls
+      // back to "—" for the LEFT JOIN edge case of a missing account.
+      return txns.map(t =>
+        `${t.date} | ${sanitizeForPrompt(t.account_name) || "—"} | ${sanitizeForPrompt(t.name)} | ${formatMoney(t.amount)} | ${categoryLabel(t.category)}`
+      ).join("\n");
     }
 
     case "get_spending_summary": {
@@ -656,6 +663,8 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       // payoff simulation that treats them as 0% would mislead the model
       // into deprioritizing real expensive debt.
       const ASSUMED_UNKNOWN_APR = 20;
+      const MAX_MONTHS = 600;
+      const MIN_FLOOR = 50;
 
       // Sort debts by strategy. For avalanche, treat rate===null as Infinity
       // for sort (so null-rate debts fall to the bottom like getDebts's
@@ -670,15 +679,32 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
         sorted.sort((a, b) => a.balance - b.balance);
       }
 
-      let result = `Debt payoff simulation (${strategy} strategy, ${formatMoney(extraMonthly)} extra/mo):\n`;
-      result += `Total debt: ${formatMoney(d.totalDebt)}\n`;
-
-      let totalInterest = 0;
-      let maxMonths = 0;
+      // Partition into simulated vs. skipped. Each `sorted` entry produces
+      // one line (in-order) in the final output; simulated debts look up
+      // their month/interest by name→index.
+      type Line =
+        | { kind: "sim"; idx: number }
+        | { kind: "skip"; text: string };
+      const lines: Line[] = [];
+      type SimDebt = {
+        name: string;
+        originalBalance: number;
+        balance: number;
+        monthlyRate: number;
+        effectiveRate: number;
+        rateNote: string;
+        minPayment: number;
+        totalInterest: number;
+        paidOffMonth: number | null;
+      };
+      const simDebts: SimDebt[] = [];
 
       for (const debt of sorted) {
         if (debt.rate === 0 && debt.minPayment === 0) {
-          result += `\n${sanitizeForPrompt(debt.name)}: ${formatMoney(debt.balance)} — no rate/payment info available`;
+          lines.push({
+            kind: "skip",
+            text: `\n${sanitizeForPrompt(debt.name)}: ${formatMoney(debt.balance)} — no rate/payment info available`,
+          });
           continue;
         }
         // rate === null: APR is genuinely unknown. Simulating at a
@@ -696,28 +722,134 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
           debt.rate == null &&
           (debt.minPayment <= 0 || debt.type !== "credit" || debt.balance > 50000)
         ) {
-          result += `\n${sanitizeForPrompt(debt.name)} (${debt.type}): ${formatMoney(debt.balance)} — APR and/or minimum payment unknown; cannot simulate payoff. Ask the user for the APR and monthly payment.`;
+          lines.push({
+            kind: "skip",
+            text: `\n${sanitizeForPrompt(debt.name)} (${debt.type}): ${formatMoney(debt.balance)} — APR and/or minimum payment unknown; cannot simulate payoff. Ask the user for the APR and monthly payment.`,
+          });
           continue;
         }
         const effectiveRate = debt.rate ?? ASSUMED_UNKNOWN_APR;
-        const rateNote = debt.rate == null ? ` (APR unknown — assumed ~${ASSUMED_UNKNOWN_APR}% for simulation)` : "";
-        const payment = Math.max(debt.minPayment, 50) + (sorted.indexOf(debt) === 0 ? extraMonthly : 0);
-        const sim = simulatePayoff(debt.balance, effectiveRate, payment);
-        totalInterest += sim.totalInterest;
-        maxMonths = Math.max(maxMonths, sim.months);
+        lines.push({ kind: "sim", idx: simDebts.length });
+        simDebts.push({
+          name: debt.name,
+          originalBalance: debt.balance,
+          balance: debt.balance,
+          monthlyRate: effectiveRate / 100 / 12,
+          effectiveRate,
+          rateNote: debt.rate == null ? ` (APR unknown — assumed ~${ASSUMED_UNKNOWN_APR}% for simulation)` : "",
+          minPayment: Math.max(debt.minPayment, MIN_FLOOR),
+          totalInterest: 0,
+          paidOffMonth: null,
+        });
+      }
 
+      // Multi-debt monthly simulator. The previous sequential implementation
+      // (pre-fix) applied `extraMonthly` only to `sorted[0]` and ran a
+      // standalone single-debt simulation per row — so after the first debt
+      // cleared, the freed-up cash never cascaded, and the second debt was
+      // simulated at its minimum only. On unknown-APR retail cards sized at
+      // ~20%, that produced negative amortization (interest > min payment)
+      // and the 600-month cap surfaced a fabricated multi-million-dollar
+      // interest figure that the LLM would cite. Avalanche/snowball are
+      // *defined* by rolling the completed debt's payment to the next; the
+      // simulator below implements that literally.
+      //
+      // Invariants the loop maintains:
+      //   • Every active debt accrues interest each month.
+      //   • Every active debt pays its min (floored at $50) each month,
+      //     capped at remaining balance.
+      //   • Paid-off debts keep contributing their min_payment to the
+      //     monthly pool — the freed cash doesn't vanish, it cascades.
+      //   • Any leftover pool (extra + unused portions of mins that exceeded
+      //     a debt's balance) applies to the highest-priority active debt
+      //     first, spilling to the next as each finishes within the month.
+      //   • Hitting MAX_MONTHS with a non-zero balance means the payment
+      //     plan can't reach payoff (interest > payment). Mark those debts
+      //     and render an honest message rather than the 600-month cap.
+      let month = 0;
+      while (month < MAX_MONTHS && simDebts.some(d => d.balance > 0.01)) {
+        month++;
+
+        // Total cash deployable this month = extra + every debt's min
+        // (paid-off or not — user's freed-up dollars keep flowing).
+        let pool = extraMonthly + simDebts.reduce((s, debt) => s + debt.minPayment, 0);
+
+        // Interest accrual pass
+        for (const debt of simDebts) {
+          if (debt.balance <= 0.01) continue;
+          const interest = debt.balance * debt.monthlyRate;
+          debt.balance += interest;
+          debt.totalInterest += interest;
+        }
+
+        // Minimum-payment pass: each active debt absorbs up to its own min
+        // from the pool (capped at balance). Pool shrinks by what's applied.
+        for (const debt of simDebts) {
+          if (debt.balance <= 0.01) continue;
+          const pay = Math.min(debt.minPayment, debt.balance, pool);
+          debt.balance -= pay;
+          pool -= pay;
+          if (debt.balance <= 0.01 && debt.paidOffMonth === null) {
+            debt.paidOffMonth = month;
+          }
+        }
+
+        // Cascade-extra pass: remaining pool applies to the first active
+        // debt in sort order (highest priority), spilling to the next as
+        // each balance hits zero within the same month.
+        for (const debt of simDebts) {
+          if (pool <= 0.01) break;
+          if (debt.balance <= 0.01) continue;
+          const pay = Math.min(pool, debt.balance);
+          debt.balance -= pay;
+          pool -= pay;
+          if (debt.balance <= 0.01 && debt.paidOffMonth === null) {
+            debt.paidOffMonth = month;
+          }
+        }
+      }
+
+      // Render in original `sorted` order so the output reflects strategy
+      // priority, not paid-off timing.
+      let result = `Debt payoff simulation (${strategy} strategy, ${formatMoney(extraMonthly)} extra/mo):\n`;
+      result += `Total debt: ${formatMoney(d.totalDebt)}\n`;
+
+      let totalInterest = 0;
+      let maxMonths = 0;
+      let anyStuck = false;
+
+      for (const line of lines) {
+        if (line.kind === "skip") {
+          result += line.text;
+          continue;
+        }
+        const debt = simDebts[line.idx];
+        if (debt.paidOffMonth === null) {
+          // Hit MAX_MONTHS with balance remaining — interest outpaces the
+          // payment plan. Render honestly rather than quoting the 600-month
+          // cap as a real timeline.
+          anyStuck = true;
+          result += `\n${sanitizeForPrompt(debt.name)}: ${formatMoney(debt.originalBalance)} @ ${debt.effectiveRate}%${debt.rateNote}`;
+          result += ` — cannot reach payoff at this payment level (minimum payment ${formatMoney(debt.minPayment)}/mo doesn't cover monthly interest). Increase extra_monthly, raise the minimum, or confirm the APR.`;
+          continue;
+        }
+        const interest = Math.round(debt.totalInterest * 100) / 100;
+        totalInterest += interest;
+        if (debt.paidOffMonth > maxMonths) maxMonths = debt.paidOffMonth;
         const payoffDate = new Date();
-        payoffDate.setMonth(payoffDate.getMonth() + sim.months);
-        result += `\n${sanitizeForPrompt(debt.name)}: ${formatMoney(debt.balance)} @ ${effectiveRate}%${rateNote}`;
-        result += ` → ${sim.months} months (${payoffDate.toISOString().slice(0, 7)})`;
-        result += ` | ${formatMoney(sim.totalInterest)} interest | ${formatMoney(payment)}/mo`;
+        payoffDate.setMonth(payoffDate.getMonth() + debt.paidOffMonth);
+        result += `\n${sanitizeForPrompt(debt.name)}: ${formatMoney(debt.originalBalance)} @ ${debt.effectiveRate}%${debt.rateNote}`;
+        result += ` → ${debt.paidOffMonth} months (${payoffDate.toISOString().slice(0, 7)})`;
+        result += ` | ${formatMoney(interest)} interest`;
       }
 
       result += `\n\nTotal interest: ${formatMoney(totalInterest)}`;
-      if (maxMonths > 0) {
+      if (maxMonths > 0 && !anyStuck) {
         const finalDate = new Date();
         finalDate.setMonth(finalDate.getMonth() + maxMonths);
         result += ` | Debt-free by: ${finalDate.toISOString().slice(0, 7)}`;
+      } else if (anyStuck) {
+        result += ` | Some debts cannot reach payoff at current payment levels — increase extra_monthly or confirm minimum payment.`;
       }
       return result;
     }
