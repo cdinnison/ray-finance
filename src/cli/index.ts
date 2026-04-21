@@ -210,6 +210,7 @@ program
   .argument("<path>", "Path to Apple Card CSV")
   .option("-b, --balance <amount>", "Current balance on the card (what you owe)")
   .option("-l, --limit <amount>", "Credit limit")
+  .option("--apr <percent>", "Annual percentage rate (e.g. 22.24). Persisted across re-imports — a re-run without --apr keeps the prior value.")
   .option("--replace-range", "Delete existing Apple Card rows in the CSV's date range before inserting")
   .option("--yes", "Skip --replace-range confirmation prompt (required in non-TTY mode)")
   .option("--dry-run", "Parse and summarize without writing to the database")

@@ -30,6 +30,38 @@ export function calculateDailyScore(db: Database, dateStr?: string): DailyScore 
 
   const nextDate = new Date(new Date(date).getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
+  // Skip scoring for calendar days that predate any recorded transaction.
+  // Without this guard, backfill callers (cleanupDerivedAfterRemove,
+  // runImportApple, runDailySync) synthesize daily_scores rows for every
+  // calendar day in a window — including days the user never touched their
+  // money. Those fabricated rows score with restaurants.cnt=0,
+  // shopping.cnt=0, allOnPace=true, isZeroSpend=true, which inflates
+  // no_restaurant_streak / no_shopping_streak / on_pace_streak and fakes
+  // zero_spend days, directly driving false achievement unlocks via
+  // checkAchievements (MAX(*_streak), COUNT(zero_spend=1)).
+  //
+  // A day counts as "real" if at least one transaction exists on-or-before
+  // that date. Days with transactions that are legitimately zero-spend
+  // (e.g. an income row) still score because the probe finds them.
+  const hasPriorActivity = db.prepare(
+    `SELECT 1 FROM transactions WHERE date <= ? LIMIT 1`
+  ).get(date);
+
+  if (!hasPriorActivity) {
+    return {
+      date,
+      score: 0,
+      restaurant_count: 0,
+      shopping_count: 0,
+      food_spend: 0,
+      total_spend: 0,
+      zero_spend: false,
+      no_restaurant_streak: 0,
+      no_shopping_streak: 0,
+      on_pace_streak: 0,
+    };
+  }
+
   // Count restaurant/fast food/coffee visits
   const restaurants = db.prepare(
     `SELECT COUNT(*) as cnt, COALESCE(SUM(amount), 0) as total FROM transactions
@@ -270,7 +302,8 @@ export function checkAchievements(db: Database): Achievement[] {
         const row = db.prepare(
           `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
            WHERE account_id IN (SELECT account_id FROM accounts WHERE type = 'credit')
-           AND amount < 0 AND date >= ? AND category != 'TRANSFER_IN'`
+           AND amount < 0 AND date >= ?
+           AND (category IS NULL OR category != 'TRANSFER_IN')`
         ).get(monthStart) as any;
         return row?.total >= 1000;
       },

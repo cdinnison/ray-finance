@@ -17,6 +17,7 @@ import {
   appleAccountExists,
   getAppleAccountBalance,
   getAppleAccountLimit,
+  getAppleAccountApr,
   countAppleRowsInRange,
   splitAppleRowsInRange,
   parseAppleCsv,
@@ -98,9 +99,7 @@ export async function runSync(): Promise<void> {
   const ora = (await import("ora")).default;
   const spinner = ora("Syncing transactions...").start();
   const startTime = Date.now();
-  // Split so a post-sync failure never masquerades as a sync failure: the
-  // sync itself is a single atomic unit, and post-sync side-effects (if any
-  // were added) should degrade gracefully rather than fail the whole command.
+  // Isolate sync failure: catch here so the spinner.fail message names the sync error, not any future post-sync step.
   let result;
   try {
     const db = getDb();
@@ -170,12 +169,14 @@ export async function runLink(): Promise<void> {
 
 export async function showAccounts(): Promise<void> {
   const db = getDb();
-  // Least-exposure: derive `is_manual` in SQL via the `access_token = 'manual'`
-  // sentinel instead of hydrating the (encrypted) Plaid access token into JS
-  // memory. Label derivation downstream reads is_manual, never the token.
+  // Discriminate the Apple Card (manual-apple) institution in SQL via its
+  // item_id rather than by access_token. access_token = 'manual' over-matches:
+  // the manual-assets institution (home/car/etc. added via `ray add`) uses the
+  // same sentinel, so labeling on access_token would wrongly tag the Manual
+  // Accounts header as '(manual)'. item_id is the structural discriminator.
   const institutions = db.prepare(
     `SELECT i.name as institution, i.item_id, i.created_at, i.logo, i.primary_color,
-            CASE WHEN i.access_token = 'manual' THEN 1 ELSE 0 END AS is_manual,
+            CASE WHEN i.item_id = 'manual-apple' THEN 1 ELSE 0 END AS is_manual,
             a.name, a.type, a.subtype, a.mask, a.current_balance, a.currency
      FROM institutions i
      LEFT JOIN accounts a ON a.item_id = i.item_id AND a.hidden = 0
@@ -502,6 +503,7 @@ export async function runAdd(): Promise<void> {
 
 export async function runRemove(): Promise<void> {
   const readline = await import("readline");
+  const ora = (await import("ora")).default;
   const db = getDb();
 
   type Entry = { kind: "institution"; item_id: string; name: string; manual: boolean } | { kind: "manual"; account_id: string; name: string; balance: number; type: string; listing_url: string | null };
@@ -584,8 +586,23 @@ export async function runRemove(): Promise<void> {
   // referencing rows we just deleted. Covers both removal paths (Plaid
   // institution and manual asset) because either can move net worth or shift
   // historical spending that participated in daily-score calculations.
-  cleanupDerivedAfterRemove(db, removedAccountIds);
-  console.log(chalk.green(`\n  Removed ${entry.name}.`));
+  //
+  // Wrapped in an ora spinner because the 90-day rescore loop inside
+  // cleanupDerivedAfterRemove can take several seconds on large transaction
+  // histories — without progress output the terminal stalls silently after
+  // the user's input and before "Removed <name>." prints. Spinner is kept
+  // OUTSIDE cleanupDerivedAfterRemove's internal db.transaction so the
+  // spinner lifecycle (start/succeed/fail) is independent of transaction
+  // boundaries. spinner.fail + process.exit(1) on throw matches runSync's
+  // error-handling idiom at L97-111.
+  const spinner = ora("Recomputing derived data...").start();
+  try {
+    cleanupDerivedAfterRemove(db, removedAccountIds);
+  } catch (err: any) {
+    spinner.fail(formatError(err, "Remove failed"));
+    process.exit(1);
+  }
+  spinner.succeed(chalk.green(`Removed ${entry.name}.`));
   console.log();
 }
 
@@ -791,7 +808,7 @@ export function showRecap(period = "last_month"): void {
 
 export async function runImportApple(
   csvPath: string,
-  opts: { balance?: string; limit?: string; replaceRange?: boolean; dryRun?: boolean; yes?: boolean } = {}
+  opts: { balance?: string; limit?: string; apr?: string; replaceRange?: boolean; dryRun?: boolean; yes?: boolean } = {}
 ): Promise<void> {
   const inquirer = (await import("inquirer")).default;
   const ora = (await import("ora")).default;
@@ -819,11 +836,12 @@ export async function runImportApple(
     replaceFirst: string;
     replaceLast: string;
     warnings: string[];
+    skippedCount: number;
   };
   let parsed: ReturnType<typeof parseAppleCsv>;
   try {
     parsed = parseAppleCsv(readFileSync(csvPath, "utf-8"));
-    const { rows, warnings, replaceWindow } = parsed;
+    const { rows, warnings, skippedCount, replaceWindow } = parsed;
     if (rows.length === 0) {
       // parseAppleCsv throws on a bad header, so zero rows + zero warnings
       // means the file had a valid header and no data rows (header-only
@@ -848,6 +866,7 @@ export async function runImportApple(
       replaceFirst: replaceWindow?.first ?? first,
       replaceLast: replaceWindow?.last ?? last,
       warnings,
+      skippedCount,
     };
   } catch (err: any) {
     console.error(chalk.red("  " + err.message));
@@ -862,8 +881,19 @@ export async function runImportApple(
   if (opts.replaceRange) {
     console.log(dim(`  Replace window: ${parsePreview.replaceFirst} → ${parsePreview.replaceLast}`));
   }
-  if (parsePreview.warnings.length > 0) {
-    console.log(chalk.yellow(`  ${parsePreview.warnings.length} rows skipped (see warnings below)`));
+  // Separate the two classes of warnings: rows that were actually DROPPED
+  // from the import (bad column count, bad date, bad amount) vs. non-fatal
+  // notices for rows that WERE imported (e.g. one-per-unique unmapped
+  // category). Conflating them under a single "N rows skipped" count is
+  // materially misleading — a user with 100 imported rows under "Groceries"
+  // should not be told 1 row was skipped just because "Groceries" is an
+  // unmapped category name.
+  if (parsePreview.skippedCount > 0) {
+    console.log(chalk.yellow(`  ${parsePreview.skippedCount} rows skipped (see warnings below)`));
+  }
+  const otherWarnings = parsePreview.warnings.length - parsePreview.skippedCount;
+  if (otherWarnings > 0) {
+    console.log(chalk.yellow(`  ${otherWarnings} warning${otherWarnings === 1 ? "" : "s"} (see below)`));
   }
   console.log("");
 
@@ -946,6 +976,37 @@ export async function runImportApple(
     }
   }
 
+  // --- APR (optional) ---
+  // Apple's CSV doesn't carry interest_rate, so we let the user supply it via
+  // --apr. Persisted across re-imports via COALESCE in upsertLiability — a
+  // re-run without --apr preserves the prior stored rate rather than
+  // clobbering it with NULL. Without an APR, downstream consumers (AI debt
+  // tools / insights) render the card as "APR unknown" rather than 0%.
+  let apr = parseMoneyStrict("apr", opts.apr) as number | undefined;
+  if (apr === undefined && !opts.dryRun) {
+    if (!process.stdin.isTTY) {
+      console.log(
+        chalk.yellow(
+          "  Non-interactive mode: skipping APR prompt. Pass --apr <percent> to set one — otherwise the AI treats the card's APR as unknown."
+        )
+      );
+      apr = undefined;
+    } else {
+      const existingApr = getAppleAccountApr(db);
+      const { answer } = await inquirer.prompt([{theme,
+        type: "input",
+        name: "answer",
+        message: `APR ${dim("(optional, percent — e.g. 22.24, blank to skip)")}`,
+        default: existingApr != null ? String(existingApr) : undefined,
+        validate: (v: string) => {
+          if (v.trim() === "") return true;
+          return tryParseMoney(v) === null ? "Enter a number or leave blank" : true;
+        },
+      }]);
+      apr = answer.trim() === "" ? undefined : (tryParseMoney(answer) ?? undefined);
+    }
+  }
+
   // --- Confirm --replace-range ---
   if (opts.replaceRange && !opts.dryRun) {
     const existing = countAppleRowsInRange(db, parsePreview.replaceFirst, parsePreview.replaceLast);
@@ -999,6 +1060,7 @@ export async function runImportApple(
       csvPath,
       balance,
       limit,
+      apr,
       replaceRange: opts.replaceRange,
       dryRun: opts.dryRun,
       preParsed: parsed,
@@ -1011,26 +1073,47 @@ export async function runImportApple(
   // Post-commit derivation: recat, net-worth snapshot, daily-score backfill.
   // Skipped on dry-run. Failures here must not masquerade as import failures
   // — rows are already committed by runAppleImport.
-  try {
-    // Run the same post-ingest derivation ray sync runs — recategorization +
-    // daily score + achievement checks — so Apple-only users (no Plaid
-    // institutions) don't get an empty daily_scores table forever, and
-    // `ray status` / `ray score` have a fresh row to show. Skipped on dry-run.
-    // Recat runs BEFORE backfill so daily_scores reflects recat'd categories.
-    if (!opts.dryRun) {
-      // Route BOTH log and error through recatBuf so neither writes to the
-      // TTY while the ora spinner is still animating (which would mangle the
-      // frame) and both get flushed in order after spinner.succeed(). Errors
-      // render red so they're still distinguishable in the post-spinner flush.
-      const bufLogger = { log: (m: string) => recatBuf.push(m), error: (m: string) => recatBuf.push(chalk.red(m)) };
-      recat = applyRecategorizationRules(db, bufLogger);
+  //
+  // Atomicity: wrap the whole derivation block in a single db.transaction so
+  // a mid-block failure (e.g. calculateDailyScore throwing partway through a
+  // long backfill) rolls back EVERYTHING — recat, net-worth snapshot, and
+  // partial daily_scores rows — rather than leaving the user with a
+  // "post-import steps failed" warning alongside half-applied derived state
+  // that subsequent `ray sync` / `ray status` reads assume is self-consistent.
+  // Matches cleanupDerivedAfterRemove's pattern at L612.
+  if (!opts.dryRun) {
+    // Route BOTH log and error through recatBuf so neither writes to the
+    // TTY while the ora spinner is still animating (which would mangle the
+    // frame) and both get flushed in order after spinner.succeed(). Errors
+    // render red so they're still distinguishable in the post-spinner flush.
+    const bufLogger = { log: (m: string) => recatBuf.push(m), error: (m: string) => recatBuf.push(chalk.red(m)) };
+    // Explicit return from the transaction callback so TS flow analysis can
+    // reason about assignment possibilities (closure writes to enclosing
+    // `let`s are treated as "may not happen" and leave the union narrowed
+    // to `null`, breaking the `scoredRange.start` deref below).
+    type WorkOut = {
+      recat: { rulesEvaluated: number; rulesSkipped: number; transactionsUpdated: number } | null;
+      daysScored: number;
+      scoredRange: { start: string; end: string } | null;
+      netWorthSnapshot: number | null;
+    };
+    const work = db.transaction((): WorkOut => {
+      // Run the same post-ingest derivation ray sync runs — recategorization +
+      // daily score + achievement checks — so Apple-only users (no Plaid
+      // institutions) don't get an empty daily_scores table forever, and
+      // `ray status` / `ray score` have a fresh row to show. Skipped on dry-run.
+      // Recat runs BEFORE backfill so daily_scores reflects recat'd categories.
+      const localRecat = applyRecategorizationRules(db, bufLogger);
+      let localDaysScored = 0;
+      let localScoredRange: { start: string; end: string } | null = null;
+      let localNetWorthSnapshot: number | null = null;
 
       if (result.dateRange) {
         // Snapshot net worth so Apple-only users (no Plaid institutions, never
         // run `ray sync`) still get net_worth_history rows — otherwise the
         // "from yesterday" delta and net-worth trend queries stay empty/stale.
         const { netWorth: nw } = snapshotNetWorth(db);
-        netWorthSnapshot = nw;
+        localNetWorthSnapshot = nw;
 
         const backfillWindow = getImportAppleBackfillWindow(result, opts);
 
@@ -1054,18 +1137,35 @@ export async function runImportApple(
           let d = start;
           while (d <= end) {
             calculateDailyScore(db, d);
-            daysScored++;
+            localDaysScored++;
             const [y, mo, dy] = d.split("-").map(Number);
             const next = new Date(Date.UTC(y, mo - 1, dy + 1));
             d = next.toISOString().slice(0, 10);
           }
-          scoredRange = { start, end };
+          localScoredRange = { start, end };
         }
       }
+      return {
+        recat: localRecat,
+        daysScored: localDaysScored,
+        scoredRange: localScoredRange,
+        netWorthSnapshot: localNetWorthSnapshot,
+      };
+    });
+    try {
+      const out = work() as WorkOut;
+      recat = out.recat;
+      daysScored = out.daysScored;
+      scoredRange = out.scoredRange;
+      netWorthSnapshot = out.netWorthSnapshot;
+    } catch (err: any) {
+      // Rollback already happened inside db.transaction on throw. The
+      // closure-local counters were never assigned to the outer-scope
+      // accumulators, so they retain their initial zero/null values and
+      // the post-spinner summary won't report derivations that were
+      // rolled back.
+      postImportError = err;
     }
-
-  } catch (err: any) {
-    postImportError = err;
   }
 
   // Incorporate the scored-day count into the succeed message so a long
@@ -1166,9 +1266,19 @@ export async function runImportApple(
       console.log(dim(`  Scored ${daysScored} day(s), ${scoredRange.start} \u2192 ${scoredRange.end}`));
     }
 
-    const newAchievements = checkAchievements(db);
-    for (const a of newAchievements) {
-      console.log(`    \u{1F3C6} ${chalk.bold(a.name)} \u2014 ${a.description}`);
+    // checkAchievements is non-fatal bonus output — a failure here must not
+    // crash the command after the spinner already succeeded. Swallow + log a
+    // dim warning so the user still sees the import summary. Deliberately
+    // outside the post-import db.transaction boundary: swallowing a throw
+    // inside a transaction would either silently commit or quietly roll back
+    // derivation writes, both wrong.
+    try {
+      const newAchievements = checkAchievements(db);
+      for (const a of newAchievements) {
+        console.log(`    \u{1F3C6} ${chalk.bold(a.name)} \u2014 ${a.description}`);
+      }
+    } catch (err: any) {
+      console.log(dim(`  (achievement check failed: ${(err && err.message) || String(err)})`));
     }
   }
 

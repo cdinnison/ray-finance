@@ -234,7 +234,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // --- New: Debts ---
   {
     name: "get_debts",
-    description: "List all debts with balances, interest rates, and minimum payments",
+    description: "List all debts with balances, interest rates, and minimum payments. Note: rate may render as 'APR unknown' when the source (e.g. Apple Card CSV import) doesn't carry APR data — treat unknown APRs as high-rate retail-card debt (~20%) for payoff prioritization, not as 0%.",
     input_schema: { type: "object" as const, properties: {}, required: [] },
   },
   {
@@ -611,7 +611,13 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       let result = `Total debt: ${formatMoney(d.totalDebt)}\n`;
       for (const debt of d.debts) {
         result += `\n${debt.name}: ${formatMoney(debt.balance)}`;
-        if (debt.rate > 0) result += ` @ ${debt.rate}% APR`;
+        // rate === null means APR is genuinely unknown (e.g. Apple Card
+        // imported from CSV — Apple doesn't export APR). Surface "APR
+        // unknown" explicitly so the model doesn't silently treat it as 0%
+        // when ranking debts for payoff advice. rate === 0 still renders as
+        // 0% (promotional / genuinely no-APR).
+        if (debt.rate != null) result += ` @ ${debt.rate}% APR`;
+        else result += ` @ APR unknown`;
         if (debt.minPayment > 0) result += ` | Min: ${formatMoney(debt.minPayment)}/mo`;
         if (debt.nextDue) result += ` | Next due: ${debt.nextDue}`;
       }
@@ -625,10 +631,21 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       const strategy = toolInput.strategy || "avalanche";
       const extraMonthly = toolInput.extra_monthly || 0;
 
-      // Sort debts by strategy
+      // Default APR assumed for unknown-rate debts (e.g. Apple Card imports
+      // without --apr). Retail cards are typically high-rate (~20%), so a
+      // payoff simulation that treats them as 0% would mislead the model
+      // into deprioritizing real expensive debt.
+      const ASSUMED_UNKNOWN_APR = 20;
+
+      // Sort debts by strategy. For avalanche, treat rate===null as the
+      // assumed retail APR so unknown-rate cards rank alongside high-rate
+      // debts rather than sinking to the bottom with 0% promotional cards.
       const sorted = [...d.debts].filter(debt => debt.balance > 0);
-      if (strategy === "avalanche") sorted.sort((a, b) => b.rate - a.rate);
-      else if (strategy === "snowball") sorted.sort((a, b) => a.balance - b.balance);
+      if (strategy === "avalanche") {
+        sorted.sort((a, b) => (b.rate ?? ASSUMED_UNKNOWN_APR) - (a.rate ?? ASSUMED_UNKNOWN_APR));
+      } else if (strategy === "snowball") {
+        sorted.sort((a, b) => a.balance - b.balance);
+      }
 
       let result = `Debt payoff simulation (${strategy} strategy, ${formatMoney(extraMonthly)} extra/mo):\n`;
       result += `Total debt: ${formatMoney(d.totalDebt)}\n`;
@@ -641,14 +658,20 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
           result += `\n${debt.name}: ${formatMoney(debt.balance)} — no rate/payment info available`;
           continue;
         }
+        // rate === null: APR unknown (e.g. Apple CSV import). Simulate at the
+        // retail-card assumption and flag the row so the model knows the
+        // resulting payoff estimate depends on an assumption it should either
+        // surface or ask the user to confirm.
+        const effectiveRate = debt.rate ?? ASSUMED_UNKNOWN_APR;
+        const rateNote = debt.rate == null ? ` (APR unknown — assumed ~${ASSUMED_UNKNOWN_APR}% for simulation)` : "";
         const payment = Math.max(debt.minPayment, 50) + (sorted.indexOf(debt) === 0 ? extraMonthly : 0);
-        const sim = simulatePayoff(debt.balance, debt.rate, payment);
+        const sim = simulatePayoff(debt.balance, effectiveRate, payment);
         totalInterest += sim.totalInterest;
         maxMonths = Math.max(maxMonths, sim.months);
 
         const payoffDate = new Date();
         payoffDate.setMonth(payoffDate.getMonth() + sim.months);
-        result += `\n${debt.name}: ${formatMoney(debt.balance)} @ ${debt.rate}%`;
+        result += `\n${debt.name}: ${formatMoney(debt.balance)} @ ${effectiveRate}%${rateNote}`;
         result += ` → ${sim.months} months (${payoffDate.toISOString().slice(0, 7)})`;
         result += ` | ${formatMoney(sim.totalInterest)} interest | ${formatMoney(payment)}/mo`;
       }

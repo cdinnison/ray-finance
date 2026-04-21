@@ -23,6 +23,11 @@ export interface AppleImportOptions {
   csvPath: string;
   balance?: number;
   limit?: number;
+  // Annual percentage rate (APR) on the Apple Card. Apple's CSV doesn't carry
+  // APR, so we let the user supply it via `--apr`. Persisted into
+  // `liabilities.interest_rate` on first import; re-imports without --apr
+  // preserve the prior stored rate via COALESCE (see upsertLiability).
+  apr?: number;
   replaceRange?: boolean;
   dryRun?: boolean;
   // Parsed CSV payload. When supplied, runAppleImport skips its own
@@ -243,6 +248,16 @@ function mapCategory(appleCat: string): CategoryMapping {
 export function parseAppleCsv(text: string): {
   rows: ParsedRow[];
   warnings: string[];
+  /**
+   * Count of rows that were actually DROPPED from the import (bad column
+   * count, bad date, bad amount). Strictly a subset of `warnings.length`:
+   * `warnings` also contains non-fatal notices (e.g. one-per-unique unmapped
+   * category) for rows that WERE imported, so conflating them under a single
+   * "N rows skipped" count is materially misleading. Consumers that want to
+   * show "skipped" and "other notices" separately should read this field
+   * rather than warnings.length.
+   */
+  skippedCount: number;
   replaceWindow: { first: string; last: string } | null;
 } {
   const raw = parseCsv(text);
@@ -263,6 +278,7 @@ export function parseAppleCsv(text: string): {
 
   const rows: ParsedRow[] = [];
   const warnings: string[] = [];
+  let skippedCount = 0;
   // Count rows per unmapped Apple category so we can emit one warning per
   // unique value rather than one per row. 'Other' is Apple's explicit
   // miscellaneous bucket (mapped to {null, null} on purpose) and is excluded.
@@ -285,10 +301,12 @@ export function parseAppleCsv(text: string): {
 
     if (r.length < EXPECTED_HEADER.length) {
       warnings.push(`Row ${i + 1}: expected ${EXPECTED_HEADER.length} columns, got ${r.length} — skipped`);
+      skippedCount++;
       continue;
     }
     if (!date) {
       warnings.push(`Row ${i + 1}: unparseable Transaction Date "${r[0]}" — skipped`);
+      skippedCount++;
       continue;
     }
 
@@ -301,6 +319,7 @@ export function parseAppleCsv(text: string): {
     const amount = parseAmount(r[6]);
     if (amount === null) {
       warnings.push(`Row ${i + 1}: unparseable Amount "${r[6]}" — skipped`);
+      skippedCount++;
       continue;
     }
 
@@ -332,7 +351,7 @@ export function parseAppleCsv(text: string): {
     replaceWindow = { first: sorted[0], last: sorted[sorted.length - 1] };
   }
 
-  return { rows, warnings, replaceWindow };
+  return { rows, warnings, skippedCount, replaceWindow };
 }
 
 /** True if the Apple Card account row already exists in the DB */
@@ -354,6 +373,19 @@ export function getAppleAccountLimit(db: Database): number | null {
     | { balance_limit: number | null }
     | undefined;
   return r?.balance_limit ?? null;
+}
+
+/**
+ * Returns the stored APR for the Apple Card liabilities row, or null if no
+ * APR has been set yet. Used by the CLI prompt/flag layer so re-runs can
+ * show the user the current value (and skip re-prompting) without clobbering
+ * it on a bare re-import.
+ */
+export function getAppleAccountApr(db: Database): number | null {
+  const r = db
+    .prepare(`SELECT interest_rate FROM liabilities WHERE account_id = ? AND type = 'credit'`)
+    .get(ACCOUNT_ID) as { interest_rate: number | null } | undefined;
+  return r?.interest_rate ?? null;
 }
 
 /** Count of existing Apple Card rows within a date range (for --replace-range preview) */
@@ -501,19 +533,25 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
   // still appear via the accounts-only fallback path, but with a
   // less-specific type label and no balance-routing through the liabilities
   // table.
-  // Note: rate/min-payment/next-due are NOT populated here — Apple's CSV
-  // doesn't expose them. Those columns stay NULL, which getDebts renders as
-  // rate=0/min_payment=0/next_due=null. If/when we add a user-prompt path
-  // for rate and min-payment (analogous to the balance prompt), this upsert
-  // should be extended.
+  // APR: Apple's CSV doesn't expose interest_rate, so we accept it via the
+  // optional --apr flag. When supplied, it's persisted on first import;
+  // on re-imports without --apr, the COALESCE in the DO UPDATE clause
+  // preserves the previously-stored rate (a bare re-run must not clobber a
+  // user-supplied APR with NULL). Downstream consumers (getDebts,
+  // ai/tools.ts get_debts, ai/insights.ts) distinguish NULL (unknown APR)
+  // from 0 (promotional / genuinely 0%) so the model never silently treats
+  // an Apple Card at rate=NULL as if it were 0% APR.
+  // min-payment / next-due are still not populated — see CHANGELOG known
+  // limitations; follow-up flags are tracked there.
   // type='credit' matches Plaid's syncLiabilities convention (src/plaid/sync.ts)
   // — keeps debt-view labels consistent across import sources.
   const upsertLiability = db.prepare(
-    `INSERT INTO liabilities (account_id, type, current_balance, updated_at)
-     SELECT ?, 'credit', current_balance, datetime('now')
+    `INSERT INTO liabilities (account_id, type, current_balance, interest_rate, updated_at)
+     SELECT ?, 'credit', current_balance, ?, datetime('now')
      FROM accounts WHERE account_id = ? AND current_balance IS NOT NULL
      ON CONFLICT(account_id, type) DO UPDATE SET
        current_balance = excluded.current_balance,
+       interest_rate   = COALESCE(excluded.interest_rate, interest_rate),
        updated_at      = datetime('now')`
   );
 
@@ -573,7 +611,9 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
       opts.limit ?? null
     );
     updateAvailable.run(ACCOUNT_ID);
-    upsertLiability.run(ACCOUNT_ID, ACCOUNT_ID);
+    // Pass APR only when the caller supplied one; otherwise NULL propagates
+    // and the DO UPDATE's COALESCE preserves any previously-stored rate.
+    upsertLiability.run(ACCOUNT_ID, opts.apr ?? null, ACCOUNT_ID);
 
     if (opts.replaceRange) {
       const info = deleteRange.run(ACCOUNT_ID, replaceFirst, replaceLast);

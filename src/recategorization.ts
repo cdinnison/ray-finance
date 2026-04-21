@@ -45,44 +45,66 @@ export function applyRecategorizationRules(db: Database, logger: SyncLogger = co
   let rulesSkipped = 0;
   let transactionsUpdated = 0;
 
-  for (const rule of rules) {
-    const col = MATCH_FIELD_SQL[rule.match_field];
-    if (!col) {
-      logger.error(`  Skipping recat rule with invalid match_field: ${rule.match_field}`);
-      rulesSkipped++;
-      continue;
-    }
+  // Atomicity: either all rules apply or none apply per run. Without this
+  // wrapper, each UPDATE autocommits, so a mid-loop throw (SQLITE_BUSY, disk
+  // error, a future contributor widening MATCH_FIELD_SQL with a typo) would
+  // leave rules 0..N-1 persisted while the caller surfaces "post-import steps
+  // failed". Matches the db.transaction idiom at property.ts:76 and
+  // apple-import.ts:566.
+  //
+  // Nested-call safety: libsql's db.transaction() issues raw BEGIN/COMMIT
+  // (not SAVEPOINT) so it cannot nest. When a caller has already opened a
+  // transaction (runImportApple's post-import wrap, runDailySync's tail
+  // wrap), we inherit that outer transaction's atomicity by running the loop
+  // directly instead of opening an inner one. db.inTransaction is the exact
+  // discriminator libsql exposes for this.
+  const runLoop = () => {
+    for (const rule of rules) {
+      const col = MATCH_FIELD_SQL[rule.match_field];
+      if (!col) {
+        logger.error(`  Skipping recat rule with invalid match_field: ${rule.match_field}`);
+        rulesSkipped++;
+        continue;
+      }
 
-    // Guard fires whenever the row isn't "already at target". COALESCE is
-    // load-bearing on any nullable field we compare with `!=`: plain `!=`
-    // against NULL yields NULL (falsy in SQLite three-valued logic) and
-    // would silently exclude rows whose category or subcategory is NULL.
-    // Apple imports produce such rows for "Other" and any unmapped Apple
-    // category.
-    //
-    // target_subcategory semantics:
-    //   - non-NULL: force (category, subcategory) to (target_category,
-    //     target_subcategory). Row matches when either column diverges.
-    //   - NULL ("unspecified"): leave subcategory alone UNLESS category is
-    //     actually changing, in which case we reset subcategory so a stale
-    //     child doesn't follow the row into its new parent (e.g. an
-    //     "Amazon -> GENERAL_MERCHANDISE" rule on a row tagged
-    //     FOOD_AND_DRINK / FOOD_AND_DRINK_GROCERIES should not keep the
-    //     grocery subcategory). This matches the "leave alone when
-    //     unspecified" convention used by the single-txn recat path in
-    //     src/ai/tools.ts and the AI-tool schema hint.
-    const result = rule.target_subcategory
-      ? db.prepare(
-          `UPDATE transactions SET category = ?, subcategory = ? WHERE ${col} LIKE ? AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)`
-        ).run(rule.target_category, rule.target_subcategory, rule.match_pattern, rule.target_category, rule.target_subcategory)
-      : db.prepare(
-          `UPDATE transactions SET category = ?, subcategory = NULL WHERE ${col} LIKE ? AND COALESCE(category, '') != ?`
-        ).run(rule.target_category, rule.match_pattern, rule.target_category);
+      // Guard fires whenever the row isn't "already at target". COALESCE is
+      // load-bearing on any nullable field we compare with `!=`: plain `!=`
+      // against NULL yields NULL (falsy in SQLite three-valued logic) and
+      // would silently exclude rows whose category or subcategory is NULL.
+      // Apple imports produce such rows for "Other" and any unmapped Apple
+      // category.
+      //
+      // target_subcategory semantics:
+      //   - non-NULL: force (category, subcategory) to (target_category,
+      //     target_subcategory). Row matches when either column diverges.
+      //   - NULL ("unspecified"): leave subcategory alone UNLESS category is
+      //     actually changing, in which case we reset subcategory so a stale
+      //     child doesn't follow the row into its new parent (e.g. an
+      //     "Amazon -> GENERAL_MERCHANDISE" rule on a row tagged
+      //     FOOD_AND_DRINK / FOOD_AND_DRINK_GROCERIES should not keep the
+      //     grocery subcategory). This matches the "leave alone when
+      //     unspecified" convention used by the single-txn recat path in
+      //     src/ai/tools.ts and the AI-tool schema hint.
+      const result = rule.target_subcategory
+        ? db.prepare(
+            `UPDATE transactions SET category = ?, subcategory = ? WHERE ${col} LIKE ? AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)`
+          ).run(rule.target_category, rule.target_subcategory, rule.match_pattern, rule.target_category, rule.target_subcategory)
+        : db.prepare(
+            `UPDATE transactions SET category = ?, subcategory = NULL WHERE ${col} LIKE ? AND COALESCE(category, '') != ?`
+          ).run(rule.target_category, rule.match_pattern, rule.target_category);
 
-    if (result.changes > 0) {
-      logger.log(`  Recategorized ${result.changes} txn(s): ${rule.label || rule.match_pattern}`);
-      transactionsUpdated += Number(result.changes);
+      if (result.changes > 0) {
+        logger.log(`  Recategorized ${result.changes} txn(s): ${rule.label || rule.match_pattern}`);
+        transactionsUpdated += Number(result.changes);
+      }
     }
+  };
+
+  if (db.inTransaction) {
+    runLoop();
+  } else {
+    const work = db.transaction(runLoop);
+    work();
   }
 
   if (transactionsUpdated > 0) {

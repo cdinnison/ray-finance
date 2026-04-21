@@ -383,6 +383,12 @@ export function forecastBalance(db: Database, accountId?: string, months = 6): {
 
   // Inflow uses plain `NOT IN` — a NULL-category negative amount is almost
   // always a refund or pre-mapping TRANSFER_IN, not real inflow.
+  // Outflow uses NULL-inclusive `(category IS NULL OR category NOT IN ...)`
+  // so Apple "Other"/unmapped rows (amount > 0) are counted as spend, while
+  // credit-card-payment mirrors (TRANSFER_OUT / TRANSFER_IN positive-amount
+  // rows on the bank side) are excluded — otherwise they'd inflate
+  // avgMonthlyOutflow and over-project future balance drop. Matches the
+  // expense-side treatment in getCashFlow / getCashFlowThisMonth.
   const inflow = db.prepare(
     `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
      WHERE amount < 0 AND date BETWEEN ? AND ? AND pending = 0
@@ -391,7 +397,8 @@ export function forecastBalance(db: Database, accountId?: string, months = 6): {
 
   const outflow = db.prepare(
     `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0${flowCondition}`
+     WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
+     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN'))${flowCondition}`
   ).get(...flowParams) as { total: number };
 
   const avgInflow = inflow.total / 3;
@@ -494,7 +501,7 @@ export function getInvestmentPerformance(db: Database): {
 
 export function getDebts(db: Database): {
   totalDebt: number;
-  debts: { name: string; balance: number; rate: number; minPayment: number; type: string; nextDue: string | null }[];
+  debts: { name: string; balance: number; rate: number | null; minPayment: number; type: string; nextDue: string | null }[];
 } {
   // Liabilities table carries rate / min payment / due date (Plaid + Apple
   // import populate it). Manual debts added via `ray add … liability` live
@@ -519,10 +526,7 @@ export function getDebts(db: Database): {
      ORDER BY l.interest_rate DESC`
   ).all() as any[];
 
-  const liabilityCoveredIds = new Set(
-    (db.prepare(`SELECT account_id FROM liabilities`).all() as { account_id: string }[])
-      .map((r) => r.account_id)
-  );
+  const liabilityCoveredIds = new Set(liabilities.map((r: any) => r.account_id));
 
   const fallbackCredits = db.prepare(
     `SELECT account_id, name, current_balance as balance, type FROM accounts
@@ -531,20 +535,26 @@ export function getDebts(db: Database): {
   ).all() as any[];
   const orphanCredits = fallbackCredits.filter((r: any) => !liabilityCoveredIds.has(r.account_id));
 
-  const debts = [
+  // Preserve NULL `interest_rate` through to consumers (do NOT coerce to 0):
+  // Apple CSV imports leave liabilities.interest_rate NULL because the CSV
+  // doesn't carry APR; manual `ray add … liability` entries land here as
+  // orphan credits with no stored rate at all. Downstream renderers (AI
+  // tools, insights) distinguish null ("unknown APR") from 0 ("genuinely 0%")
+  // so the model doesn't rank an unknown-APR retail card as if it were 0%.
+  const debts: { name: string; balance: number; rate: number | null; minPayment: number; type: string; nextDue: string | null; _sortRate: number | null }[] = [
     ...liabilities.map((r: any) => ({
       name: r.name,
       balance: r.balance || 0,
-      rate: r.rate || 0,
+      rate: r.rate ?? null,
       minPayment: r.min_payment || 0,
       type: r.type || "unknown",
       nextDue: r.next_due || null,
-      _sortRate: r.rate, // preserve null/undefined for sort; not returned
+      _sortRate: r.rate ?? null, // preserve null for sort; not returned
     })),
     ...orphanCredits.map((r: any) => ({
       name: r.name,
       balance: r.balance || 0,
-      rate: 0,
+      rate: null, // orphan credits have no liabilities row — APR unknown, not 0
       minPayment: 0,
       type: r.type,
       nextDue: null,

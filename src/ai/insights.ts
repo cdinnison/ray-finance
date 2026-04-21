@@ -97,13 +97,28 @@ function buildSnapshot(db: Database.Database): string {
   // Debt summary
   const debts = getDebts(db);
   if (debts.totalDebt > 0) {
-    const rates = debts.debts.filter(d => d.rate > 0);
+    // Only known, positive rates contribute to the weighted-average APR —
+    // null (unknown, e.g. Apple CSV import) and 0 (promotional) are both
+    // excluded so the headline number reflects genuine interest-bearing debt.
+    const rates = debts.debts.filter(d => d.rate != null && d.rate > 0);
     let debtLine = `Total debt: ${formatMoney(debts.totalDebt)}`;
     if (rates.length > 0) {
-      const weightedRate = rates.reduce((s, d) => s + d.rate * d.balance, 0) / rates.reduce((s, d) => s + d.balance, 0);
+      const weightedRate = rates.reduce((s, d) => s + (d.rate as number) * d.balance, 0) / rates.reduce((s, d) => s + d.balance, 0);
       debtLine += ` (avg ${weightedRate.toFixed(1)}% APR)`;
     }
     lines.push(debtLine);
+
+    // Surface unknown-APR debts explicitly so the model doesn't silently
+    // rank them as 0% when advising on payoff order. Apple CSV imports land
+    // here by default (Apple doesn't export APR); manual `ray add …
+    // liability` entries also lack a stored rate.
+    const unknownRateDebts = debts.debts.filter(d => d.rate == null);
+    if (unknownRateDebts.length > 0) {
+      const names = unknownRateDebts.map(d => d.name).join(", ");
+      lines.push(
+        `Note: ${unknownRateDebts.length} debt(s) have unknown APR (${names}) — assume retail-card rate (~20%) when prioritizing payoff, or ask the user to confirm.`
+      );
+    }
   }
 
   return lines.join("\n");
