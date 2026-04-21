@@ -566,10 +566,20 @@ describe("queries include NULL-category spending rows (F032 regression)", () => 
     expect(cf.expenses).toBeGreaterThanOrEqual(32);
   });
 
-  it("compareSpending includes NULL-category rows in period totals", () => {
+  it("compareSpending EXCLUDES NULL-category rows (deliberate exception from F032's include-null rule)", () => {
+    // F007 carved compareSpending out of the general F032 include-NULL invariant:
+    // downstream UI consumers key the comparison by `c.category` (Map key) and
+    // categoryLabel() renders both literal 'Other' and NULL as the string
+    // 'Other', so keeping NULL in compareSpending produced two visually
+    // duplicate 'Other' rows. Solution per the human fix_hint: exclude NULL
+    // from compareSpending specifically while leaving getCashFlow,
+    // getCashFlowThisMonth, and the other expense-side queries NULL-inclusive.
+    // If a future refactor reintroduces NULL into compareSpending, expect
+    // duplicate-Other UI regressions; other NULL-inclusion tests above still
+    // pin the general rule.
     const cmp = compareSpending(db, "2024-12-01", "2024-12-31", "2025-01-01", "2025-01-31");
-    // 50 (food) + 35 (null) — TRANSFER_OUT excluded, LOAN_PAYMENTS would be too but there are none
-    expect(cmp.period2Total).toBe(85);
+    // 50 (food) only — NULL excluded, TRANSFER_OUT excluded, no LOAN_PAYMENTS present
+    expect(cmp.period2Total).toBe(50);
   });
 
   // F032 companion invariant: the NULL-inclusion fix is expense-side only.

@@ -127,10 +127,17 @@ describe("tryParseMoney", () => {
 });
 
 describe("cleanupDerivedAfterRemove", () => {
-  it("refreshes daily_scores and net_worth_history after account removal", () => {
+  it("refreshes daily_scores through yesterday (not today) and writes a net_worth_history snapshot", () => {
     // Regression for F023: removing an account left stale daily_scores and
     // net_worth_history rows referencing the now-deleted account. Calling
     // cleanupDerivedAfterRemove after the DELETE must repopulate both.
+    //
+    // Boundary invariant (bug_001, ultrareview 2026-04): the rescore loop
+    // must stop at yesterday, matching runDailySync and
+    // getImportAppleBackfillWindow. Writing a partial today row would seed
+    // the next sync's streak chain with mid-day data, and runDailySync's
+    // own backfill loop is strict-less-than yesterday so a stale today row
+    // would never get overwritten.
     const db = new Database(":memory:");
     db.pragma("foreign_keys = ON");
     migrate(db);
@@ -147,17 +154,21 @@ describe("cleanupDerivedAfterRemove", () => {
     ).run();
 
     const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
     db.prepare(
       `INSERT INTO transactions (transaction_id, account_id, amount, date, name, pending, iso_currency_code)
        VALUES ('t1', 'test-acct', 10, ?, 'Coffee', 0, 'USD')`
-    ).run(today);
+    ).run(yesterday);
 
-    // Run cleanup — this should produce a daily_scores row for today and a
-    // net_worth_history snapshot.
+    // Run cleanup — this should produce a daily_scores row for yesterday and
+    // a net_worth_history snapshot, but NOT a row for today (partial day).
     cleanupDerivedAfterRemove(db as any, ["test-acct"]);
 
-    const dsRows = db.prepare(`SELECT COUNT(*) as c FROM daily_scores WHERE date = ?`).get(today) as { c: number };
-    expect(dsRows.c).toBe(1);
+    const yesterdayRows = db.prepare(`SELECT COUNT(*) as c FROM daily_scores WHERE date = ?`).get(yesterday) as { c: number };
+    expect(yesterdayRows.c).toBe(1);
+
+    const todayRows = db.prepare(`SELECT COUNT(*) as c FROM daily_scores WHERE date = ?`).get(today) as { c: number };
+    expect(todayRows.c).toBe(0);
 
     const nwRows = db.prepare(`SELECT COUNT(*) as c FROM net_worth_history`).get() as { c: number };
     expect(nwRows.c).toBeGreaterThan(0);

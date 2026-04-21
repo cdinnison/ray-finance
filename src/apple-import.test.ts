@@ -669,10 +669,13 @@ describe("runAppleImport", () => {
   it("preserves user-authored notes/labels across --replace-range (and restores user category/subcategory onto rows the CSV left NULL)", () => {
     // Regression for F021: without the snapshot/restore logic, DELETE + INSERT
     // would silently drop user-authored note/label on every re-run. The
-    // restore uses asymmetric COALESCE semantics — note/label always take
-    // the snapshot (fresh insert leaves them NULL anyway), while a user's
-    // manual category/subcategory override wins over the Apple-source value
-    // the CSV would otherwise re-apply.
+    // restore uses uniform snapshot-wins COALESCE for every user-editable
+    // column — a manual category/subcategory override wins over the
+    // Apple-source value the CSV would otherwise re-apply, and any note /
+    // label the user set survives even when the fresh INSERT writes a
+    // non-NULL default (TYPE_LABELS assigns 'refund' / 'adjustment' /
+    // 'installment' to those three row types — see the Credit-row companion
+    // test below).
     const db = freshDb();
 
     // Seed the initial import.
@@ -745,6 +748,56 @@ describe("runAppleImport", () => {
     expect(after.note).toBe("user note: refund tracking");
     // Snapshot had NULL category → COALESCE falls through to fresh CSV value.
     expect(after.category).toBe("TRANSFER_IN");
+  });
+
+  it("preserves a user-edited label on a Credit/Installment row across --replace-range (TYPE_LABELS non-NULL path)", () => {
+    // Regression for bug_007 (ultrareview, 2026-04): the label column is NOT
+    // NULL on fresh INSERT for Credit, Debit, and Installment rows — Apple's
+    // TYPE_LABELS assigns 'refund' / 'adjustment' / 'installment' respectively.
+    // If restoreUserFields used fresh-row-wins COALESCE on label (the previous
+    // bug), the user's override would silently revert to the Apple default on
+    // every --replace-range. The uniform snapshot-wins direction must preserve
+    // the user's label regardless of row type. Tested on both a Credit row
+    // (Sq Vacancy Coffee refund → 'refund') and an Installment row (Monthly
+    // Installments → 'installment') so the coverage exercises every non-NULL
+    // TYPE_LABELS entry that participates in this path.
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 0 });
+
+    const refund: any = db.prepare(
+      `SELECT transaction_id, label FROM transactions WHERE merchant_name = 'Sq Vacancy Coffee (return)'`
+    ).get();
+    // Sanity-check the premise: fresh Credit INSERT carries 'refund' via TYPE_LABELS.
+    expect(refund.label).toBe("refund");
+
+    const installment: any = db.prepare(
+      `SELECT transaction_id, label FROM transactions WHERE merchant_name = 'Monthly Installments'`
+    ).get();
+    expect(installment.label).toBe("installment");
+
+    // User overrides both labels to something more descriptive.
+    db.prepare(`UPDATE transactions SET label = ? WHERE transaction_id = ?`).run(
+      "business-refund",
+      refund.transaction_id
+    );
+    db.prepare(`UPDATE transactions SET label = ? WHERE transaction_id = ?`).run(
+      "phone-financing",
+      installment.transaction_id
+    );
+
+    // Re-run with --replace-range. Apple's fresh INSERT will try to write the
+    // TYPE_LABELS value again — restoreUserFields must prefer the snapshot.
+    runAppleImport(db, { csvPath: path, balance: 0, replaceRange: true });
+
+    const refundAfter: any = db.prepare(
+      `SELECT label FROM transactions WHERE transaction_id = ?`
+    ).get(refund.transaction_id);
+    const installmentAfter: any = db.prepare(
+      `SELECT label FROM transactions WHERE transaction_id = ?`
+    ).get(installment.transaction_id);
+
+    expect(refundAfter.label).toBe("business-refund");
+    expect(installmentAfter.label).toBe("phone-financing");
   });
 
   it("skips a rule with invalid match_field without throwing or touching data", () => {

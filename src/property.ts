@@ -70,8 +70,14 @@ export function addManualAccount(
 
 /** Remove a manual account */
 export function removeManualAccount(db: Database, id: string): void {
-  db.prepare(`DELETE FROM accounts WHERE account_id = ?`).run(id);
-  db.prepare(`DELETE FROM settings WHERE key = ?`).run(LISTING_URL_PREFIX + id);
+  // Wrap both DELETEs so a mid-chain failure can't leave the account row
+  // deleted but the settings listing_url behind (or vice versa). Symmetric
+  // with the institution-removal DELETE chain in src/cli/commands.ts.
+  const work = db.transaction(() => {
+    db.prepare(`DELETE FROM accounts WHERE account_id = ?`).run(id);
+    db.prepare(`DELETE FROM settings WHERE key = ?`).run(LISTING_URL_PREFIX + id);
+  });
+  work();
 }
 
 /** List all manual accounts */

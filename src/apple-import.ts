@@ -543,24 +543,21 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
     ).all(ACCOUNT_ID, replaceFirst, replaceLast) as typeof preserved;
   }
 
-  // COALESCE direction is deliberately asymmetric between the two field
-  // groups:
-  //   - note/label: fresh INSERT leaves these NULL (Apple CSV doesn't carry
-  //     them), so `COALESCE(note, ?)` = "keep whatever the row has, else use
-  //     the snapshot". In practice the snapshot always wins, which is what
-  //     we want — user-authored notes/labels must survive a re-import.
-  //   - category/subcategory: fresh INSERT writes the Apple-source category
-  //     (via CATEGORY_MAP) when Apple provides one. A user who manually
-  //     recategorized a row BEFORE --replace-range should have that override
-  //     preserved, so `COALESCE(?, category)` = "prefer the snapshot; fall
-  //     back to the Apple-source value only when the user didn't set one".
-  //     When the snapshot entry was NULL (row was in `preserved` only
-  //     because of note/label), the COALESCE falls through to the Apple
-  //     value and re-categorization still happens naturally.
+  // Uniform "snapshot wins" semantics for all four user-editable columns:
+  // if the user set a value before --replace-range, that value survives the
+  // re-import; otherwise the freshly-inserted Apple-source value (or NULL)
+  // remains. Each `COALESCE(?, col)` reads as "prefer the snapshot; fall
+  // back to whatever the fresh INSERT wrote". Applies to all four columns
+  // so the rule is easy to verify — note is NULL-on-insert today (so
+  // direction is functionally equivalent), but label is NON-NULL on
+  // Credit/Debit/Installment rows via TYPE_LABELS, and category/subcategory
+  // are non-NULL whenever CATEGORY_MAP has an entry for the Apple category,
+  // so "snapshot wins" is the only direction that preserves user intent
+  // across every row shape.
   const restoreUserFields = db.prepare(
     `UPDATE transactions
-        SET note        = COALESCE(note, ?),
-            label       = COALESCE(label, ?),
+        SET note        = COALESCE(?, note),
+            label       = COALESCE(?, label),
             category    = COALESCE(?, category),
             subcategory = COALESCE(?, subcategory)
       WHERE transaction_id = ?`
@@ -612,10 +609,10 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
     }
 
     // Re-apply snapshotted user fields to any re-inserted rows that share the
-    // same transaction_id. See `restoreUserFields` above for the asymmetric
-    // COALESCE semantics: note/label always restore from snapshot, while
-    // category/subcategory prefer the snapshot and fall back to the
-    // Apple-source value only when the user hadn't set one.
+    // same transaction_id. `restoreUserFields` uses snapshot-wins COALESCE for
+    // every column — a user edit on any of note/label/category/subcategory
+    // made before --replace-range survives the re-import, and rows the user
+    // never touched keep whatever the fresh INSERT wrote.
     if (opts.replaceRange && preserved.length > 0) {
       for (const p of preserved) {
         restoreUserFields.run(p.note, p.label, p.category, p.subcategory, p.transaction_id);

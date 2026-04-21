@@ -560,18 +560,25 @@ export async function runRemove(): Promise<void> {
     removedAccountIds = [entry.account_id];
     removeManualAccount(db, entry.account_id);
   } else {
-    // Remove all data for this institution
+    // Remove all data for this institution. The DELETE chain must be atomic
+    // so a mid-chain failure (Ctrl+C, SQLITE_BUSY, disk error) can't leave
+    // the account half-removed — e.g. transactions gone but the account row
+    // still listed. cleanupDerivedAfterRemove runs after the commit and has
+    // its own transaction, so the 90-day rescore never holds the write lock.
     const accounts = db.prepare(`SELECT account_id FROM accounts WHERE item_id = ?`).all(entry.item_id) as { account_id: string }[];
     removedAccountIds = accounts.map(a => a.account_id);
-    for (const acct of accounts) {
-      db.prepare(`DELETE FROM transactions WHERE account_id = ?`).run(acct.account_id);
-      db.prepare(`DELETE FROM holdings WHERE account_id = ?`).run(acct.account_id);
-      db.prepare(`DELETE FROM investment_transactions WHERE account_id = ?`).run(acct.account_id);
-      db.prepare(`DELETE FROM liabilities WHERE account_id = ?`).run(acct.account_id);
-      db.prepare(`DELETE FROM recurring WHERE account_id = ?`).run(acct.account_id);
-    }
-    db.prepare(`DELETE FROM accounts WHERE item_id = ?`).run(entry.item_id);
-    db.prepare(`DELETE FROM institutions WHERE item_id = ?`).run(entry.item_id);
+    const removeInstitution = db.transaction(() => {
+      for (const acct of accounts) {
+        db.prepare(`DELETE FROM transactions WHERE account_id = ?`).run(acct.account_id);
+        db.prepare(`DELETE FROM holdings WHERE account_id = ?`).run(acct.account_id);
+        db.prepare(`DELETE FROM investment_transactions WHERE account_id = ?`).run(acct.account_id);
+        db.prepare(`DELETE FROM liabilities WHERE account_id = ?`).run(acct.account_id);
+        db.prepare(`DELETE FROM recurring WHERE account_id = ?`).run(acct.account_id);
+      }
+      db.prepare(`DELETE FROM accounts WHERE item_id = ?`).run(entry.item_id);
+      db.prepare(`DELETE FROM institutions WHERE item_id = ?`).run(entry.item_id);
+    });
+    removeInstitution();
   }
   // Refresh derived state so daily_scores and net_worth_history aren't left
   // referencing rows we just deleted. Covers both removal paths (Plaid
@@ -585,8 +592,9 @@ export async function runRemove(): Promise<void> {
 /**
  * After an account is removed, daily_scores rows and the latest
  * net_worth_history row may still reference transactions / balances that no
- * longer exist. Rescore the last ~90 days (so streak chains covering the
- * recent window are recomputed) and take a fresh net-worth snapshot.
+ * longer exist. Rescore from ~90 days ago through yesterday (matching the
+ * runDailySync / getImportAppleBackfillWindow convention of never writing
+ * a partial today row) and take a fresh net-worth snapshot.
  * `removedAccountIds` is reserved for future per-account rescoping — today
  * calculateDailyScore reads the full transactions table, so we simply
  * re-score the window.
@@ -594,9 +602,12 @@ export async function runRemove(): Promise<void> {
 export function cleanupDerivedAfterRemove(db: ReturnType<typeof getDb>, _removedAccountIds: string[]): void {
   const now = new Date();
   // 90 days covers the typical streak/score-window span without blowing up
-  // on very old data.
+  // on very old data. Stop at yesterday — writing a partial today row would
+  // seed the next runDailySync's streak chain with mid-day data, and
+  // runDailySync's own backfill loop is strict-less-than yesterday so it
+  // would never overwrite a stale partial row on the next sync.
   const start = new Date(now.getTime() - 90 * 86400000);
-  const endStr = now.toISOString().slice(0, 10);
+  const endStr = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
   let d = start.toISOString().slice(0, 10);
   const work = db.transaction(() => {
     while (d <= endStr) {
@@ -1007,7 +1018,11 @@ export async function runImportApple(
     // `ray status` / `ray score` have a fresh row to show. Skipped on dry-run.
     // Recat runs BEFORE backfill so daily_scores reflects recat'd categories.
     if (!opts.dryRun) {
-      const bufLogger = { log: (m: string) => recatBuf.push(m), error: (m: string) => console.error(m) };
+      // Route BOTH log and error through recatBuf so neither writes to the
+      // TTY while the ora spinner is still animating (which would mangle the
+      // frame) and both get flushed in order after spinner.succeed(). Errors
+      // render red so they're still distinguishable in the post-spinner flush.
+      const bufLogger = { log: (m: string) => recatBuf.push(m), error: (m: string) => recatBuf.push(chalk.red(m)) };
       recat = applyRecategorizationRules(db, bufLogger);
 
       if (result.dateRange) {
@@ -1127,11 +1142,17 @@ export async function runImportApple(
   }
 
   // --- Recategorization (post-succeed, buffered for a clean heading) ---
-  // Flush the buffered per-rule lines under a Recategorization heading only
-  // when rules actually updated rows. Keeping the heading gated prevents an
-  // empty-heading eyesore on imports that didn't trip any rules. Dry-run
-  // never prints the heading because recat is skipped under --dry-run.
-  if (!opts.dryRun && recat && recat.transactionsUpdated > 0) {
+  // Flush the buffered output — both per-rule success lines and any error
+  // messages (e.g. skipped invalid-match_field rules, which bufLogger.error
+  // routes into this same buffer) — under a Recategorization heading
+  // whenever the buffer has any content. Gating on recatBuf.length (not on
+  // recat.transactionsUpdated) prevents both the empty-heading eyesore
+  // (nothing to print) and the suppressed-error regression (rules were
+  // skipped but no rule actually updated rows). Dry-run never prints
+  // because recat is skipped under --dry-run. Runs even if
+  // applyRecategorizationRules threw — errors buffered before the throw
+  // still reach the user.
+  if (!opts.dryRun && recatBuf.length > 0) {
     console.log(`\n${heading("Recategorization")}`);
     for (const line of recatBuf) console.log(line);
   }
