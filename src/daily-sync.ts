@@ -221,7 +221,7 @@ export async function runDailySync(
     // transactions, so rules the user cares about (e.g. Amazon -> ONLINE_SHOPPING)
     // should shape the score they see on the same day the sync ran, not the
     // following day's.
-    applyRecategorizationRules(db, logger);
+    const recat = applyRecategorizationRules(db, logger);
 
     // Calculate daily score for yesterday. Also backfill any un-scored calendar
     // days between the newest daily_scores row and yesterday so a single skipped
@@ -242,6 +242,55 @@ export async function runDailySync(
         backfillDates.push(cursor.toISOString().slice(0, 10));
         cursor = new Date(cursor.getTime() + 24 * 60 * 60 * 1000);
       }
+    }
+
+    // If the recat pass newly updated transactions dated BEFORE the gap-backfill
+    // range (a rule the user added mid-life that happened to also match older
+    // transactions already sitting in the DB), widen the rescore to cover those
+    // older dates too. Otherwise their existing daily_scores rows survive stale
+    // with the pre-recat category breakdown. Mirrors the widening runImportApple
+    // applies at cli/commands.ts — F034 "fix the class, not the instance".
+    //
+    // Lower bound is clamped against MIN(transactions.date): calculateDailyScore
+    // returns a zero row WITHOUT inserting into daily_scores on pre-first-txn
+    // dates (its hasPriorActivity guard), so calling it for such dates is a
+    // cheap no-op, but the clamp keeps the "recat-widened" log output honest.
+    const widenedDates: string[] = [];
+    if (recat.earliestAffectedDate !== null) {
+      // The rescore range the code below already covers starts at the day
+      // after newestScored (if any scored rows exist) and runs through
+      // yesterday; when no scored rows exist, only yesterday is scored.
+      // Cap at yesterday so the widened loop doesn't double-score yesterday
+      // (the unconditional calculateDailyScore(db, yesterday) call below
+      // re-scores it anyway; daily_scores PK-UPSERT makes that idempotent,
+      // but a duplicate logger.log line would be noisy).
+      const gapStart = newestScored.date
+        ? new Date(new Date(newestScored.date).getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+        : yesterday;
+      const currentStart = gapStart < yesterday ? gapStart : yesterday;
+      if (recat.earliestAffectedDate < currentStart) {
+        const firstTxn = db.prepare(`SELECT MIN(date) as d FROM transactions`).get() as { d: string | null };
+        // Clamp against MIN(transactions.date). If transactions is empty,
+        // recat.earliestAffectedDate couldn't be non-null in the first place
+        // (nothing to update), so this guard is defensive.
+        if (firstTxn.d != null) {
+          const widenStart =
+            recat.earliestAffectedDate > firstTxn.d ? recat.earliestAffectedDate : firstTxn.d;
+          if (widenStart < currentStart) {
+            let cursor = new Date(widenStart);
+            const stopMs = new Date(currentStart).getTime();
+            while (cursor.getTime() < stopMs) {
+              widenedDates.push(cursor.toISOString().slice(0, 10));
+              cursor = new Date(cursor.getTime() + 24 * 60 * 60 * 1000);
+            }
+          }
+        }
+      }
+    }
+
+    for (const d of widenedDates) {
+      const score = calculateDailyScore(db, d);
+      logger.log(`  Daily score (${d}, recat-widened): ${score.score}/100`);
     }
     for (const d of backfillDates) {
       const score = calculateDailyScore(db, d);
