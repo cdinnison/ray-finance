@@ -1,6 +1,5 @@
 import type BetterSqlite3 from "libsql";
 import type { SyncLogger } from "./daily-sync.js";
-import { escapeLikePattern } from "./queries/index.js";
 type Database = BetterSqlite3.Database;
 
 export interface RecategorizationResult {
@@ -33,6 +32,21 @@ const MATCH_FIELD_SQL: Record<string, string> = {
   subcategory: "subcategory",
 } as const;
 
+export interface ApplyRecategorizationOptions {
+  /**
+   * Transaction_ids that must NOT be overwritten by recat rules on this run.
+   * Used by `runImportApple --replace-range` to pass the set of rows whose
+   * user-authored category/subcategory was just re-applied from the Pass-1/
+   * Pass-2 snapshot — the 'snapshot wins' invariant that --replace-range
+   * promises requires these rows be immune to post-import auto-recat.
+   *
+   * Implemented via a single-parameter `json_each(?)` subquery so arbitrary-
+   * size sets don't hit SQLite's 999-bind-parameter limit. Undefined or empty
+   * iterable is a no-op (no exclusion clause added).
+   */
+  excludeTransactionIds?: Iterable<string>;
+}
+
 /**
  * Apply every row in `recategorization_rules` as an UPDATE against
  * `transactions`. Called from both `runDailySync` and `runImportApple`; owns
@@ -42,7 +56,22 @@ const MATCH_FIELD_SQL: Record<string, string> = {
  * Accepts an optional SyncLogger so background sync under Ink can route
  * output away from stdout.
  */
-export function applyRecategorizationRules(db: Database, logger: SyncLogger = console): RecategorizationResult {
+export function applyRecategorizationRules(
+  db: Database,
+  logger: SyncLogger = console,
+  options?: ApplyRecategorizationOptions
+): RecategorizationResult {
+  // Pre-compute the exclude clause + JSON param once per call — the same
+  // pair is appended to every probe / UPDATE below. json_each unpacks a JSON
+  // array into a rowset the NOT IN subquery consumes, so the whole exclude
+  // list rides on a single bound parameter regardless of size.
+  const excludeArr = options?.excludeTransactionIds
+    ? [...options.excludeTransactionIds]
+    : [];
+  const excludeClause = excludeArr.length > 0
+    ? " AND transaction_id NOT IN (SELECT value FROM json_each(?))"
+    : "";
+  const excludeJson = excludeArr.length > 0 ? JSON.stringify(excludeArr) : null;
   const rules = db.prepare(
     `SELECT match_field, match_pattern, target_category, target_subcategory, label FROM recategorization_rules`
   ).all() as {
@@ -82,6 +111,18 @@ export function applyRecategorizationRules(db: Database, logger: SyncLogger = co
         rulesSkipped++;
         continue;
       }
+      // Defense-in-depth against empty / whitespace-only match_pattern:
+      // add_recat_rule and the backup-import path both reject these, and
+      // a CHECK constraint on fresh schemas rejects direct INSERTs — but
+      // pre-existing DBs (created before the CHECK landed) can still
+      // carry an empty-pattern row. Skip with a loud error so the
+      // operator sees it instead of a silently-dead rule under
+      // pass-through LIKE (empty pattern → zero matches).
+      if (!rule.match_pattern || rule.match_pattern.trim() === "") {
+        logger.error(`  Skipping recat rule with empty match_pattern: ${rule.label || "(no label)"}`);
+        rulesSkipped++;
+        continue;
+      }
 
       // Guard fires whenever the row isn't "already at target". COALESCE is
       // load-bearing on any nullable field we compare with `!=`: plain `!=`
@@ -109,37 +150,29 @@ export function applyRecategorizationRules(db: Database, logger: SyncLogger = co
       // daily_scores for old transactions that newly matched a rule get
       // refreshed.
       //
-      // Escape LIKE wildcards (%/_/\\) in rule.match_pattern, wrap the
-      // escaped substring in %..%, and append ESCAPE '\\' to every LIKE
-      // clause. Without escaping, a malicious or mistaken rule whose
-      // match_pattern is `%` (or contains `%`/`_`) mass-recategorizes the
-      // whole database — add_recat_rule validates match_field but not
-      // match_pattern, so this is the authoritative defense. Matches the
-      // convention used everywhere else LIKE runs against user-supplied
-      // input (queries/index.ts: getTransactionsFiltered merchant filter,
-      // searchTransactions query).
-      //
-      // Semantic change vs. pre-F024: match_pattern is now a LITERAL
-      // substring (add_recat_rule schema description matches). Existing
-      // user rules that explicitly included %..% wrappers are escaped and
-      // wrapped by the engine, so they become "match literal %..%" — which
-      // won't fire on any real transaction name. Callers MUST drop any
-      // explicit %..% wrapping from stored rule patterns.
-      const likePattern = `%${escapeLikePattern(rule.match_pattern)}%`;
+      // match_pattern is bound directly into LIKE — callers are expected
+      // to include %/_ wildcards themselves (e.g. '%AMAZON%') when they
+      // want substring matching. The add_recat_rule tool description
+      // documents this contract. Escaping/wrapping pattern content here
+      // would silently break every pre-existing user rule that already
+      // includes wildcards.
       const minSql = rule.target_subcategory
-        ? `SELECT MIN(date) as d FROM transactions WHERE ${col} LIKE ? ESCAPE '\\' AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)`
-        : `SELECT MIN(date) as d FROM transactions WHERE ${col} LIKE ? ESCAPE '\\' AND COALESCE(category, '') != ?`;
-      const minRow = rule.target_subcategory
-        ? (db.prepare(minSql).get(likePattern, rule.target_category, rule.target_subcategory) as { d: string | null })
-        : (db.prepare(minSql).get(likePattern, rule.target_category) as { d: string | null });
+        ? `SELECT MIN(date) as d FROM transactions WHERE ${col} LIKE ? AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)${excludeClause}`
+        : `SELECT MIN(date) as d FROM transactions WHERE ${col} LIKE ? AND COALESCE(category, '') != ?${excludeClause}`;
+      const probeParams: unknown[] = rule.target_subcategory
+        ? [rule.match_pattern, rule.target_category, rule.target_subcategory]
+        : [rule.match_pattern, rule.target_category];
+      if (excludeJson !== null) probeParams.push(excludeJson);
+      const minRow = db.prepare(minSql).get(...probeParams) as { d: string | null };
 
-      const result = rule.target_subcategory
-        ? db.prepare(
-            `UPDATE transactions SET category = ?, subcategory = ? WHERE ${col} LIKE ? ESCAPE '\\' AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)`
-          ).run(rule.target_category, rule.target_subcategory, likePattern, rule.target_category, rule.target_subcategory)
-        : db.prepare(
-            `UPDATE transactions SET category = ?, subcategory = NULL WHERE ${col} LIKE ? ESCAPE '\\' AND COALESCE(category, '') != ?`
-          ).run(rule.target_category, likePattern, rule.target_category);
+      const updateSql = rule.target_subcategory
+        ? `UPDATE transactions SET category = ?, subcategory = ? WHERE ${col} LIKE ? AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)${excludeClause}`
+        : `UPDATE transactions SET category = ?, subcategory = NULL WHERE ${col} LIKE ? AND COALESCE(category, '') != ?${excludeClause}`;
+      const updateParams: unknown[] = rule.target_subcategory
+        ? [rule.target_category, rule.target_subcategory, rule.match_pattern, rule.target_category, rule.target_subcategory]
+        : [rule.target_category, rule.match_pattern, rule.target_category];
+      if (excludeJson !== null) updateParams.push(excludeJson);
+      const result = db.prepare(updateSql).run(...updateParams);
 
       if (result.changes > 0) {
         logger.log(`  Recategorized ${result.changes} txn(s): ${rule.label || rule.match_pattern}`);

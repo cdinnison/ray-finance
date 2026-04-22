@@ -508,14 +508,13 @@ describe("runAppleImport", () => {
     // Apple maps Poke's "Restaurants" -> FOOD_AND_DRINK / FOOD_AND_DRINK_RESTAURANT.
     // A category-only rule (null target_subcategory) must change the top-level
     // category AND clear the stale subcategory, not leave an inconsistent pair.
-    // Under F024 the pattern is treated as a LITERAL substring (wildcards
-    // escaped, %-wrapping supplied by the engine), so callers pass a bare
-    // substring. The merchant column holds "Poke Tiki Costa Mesa" so
-    // substring "Poke" matches.
+    // match_pattern is a raw SQL LIKE argument — wrap with %..% for substring
+    // matching. The merchant column holds "Poke Tiki Costa Mesa" so
+    // '%Poke%' matches.
     db.prepare(
       `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
        VALUES (?, ?, ?, ?, ?)`
-    ).run("merchant_name", "Poke", "GENERAL_MERCHANDISE", null, "Poke -> general");
+    ).run("merchant_name", "%Poke%", "GENERAL_MERCHANDISE", null, "Poke -> general");
 
     runAppleImport(db, { csvPath: path, balance: 0 });
     const recat = applyRecategorizationRules(db);
@@ -537,11 +536,11 @@ describe("runAppleImport", () => {
     // Apple maps Poke's "Restaurants" -> FOOD_AND_DRINK / FOOD_AND_DRINK_RESTAURANT.
     // This rule refines only the subcategory — same top-level category — which
     // an earlier version of the helper silently excluded via its WHERE clause.
-    // Under F024 the pattern is a literal substring (engine wraps %..%).
+    // match_pattern is a raw SQL LIKE argument — wrap with %..% for substring.
     db.prepare(
       `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
        VALUES (?, ?, ?, ?, ?)`
-    ).run("merchant_name", "Poke", "FOOD_AND_DRINK", "FOOD_AND_DRINK_FAST_FOOD", "Poke -> fast food");
+    ).run("merchant_name", "%Poke%", "FOOD_AND_DRINK", "FOOD_AND_DRINK_FAST_FOOD", "Poke -> fast food");
 
     runAppleImport(db, { csvPath: path, balance: 0 });
     const recat = applyRecategorizationRules(db);
@@ -1112,76 +1111,73 @@ describe("runAppleImport", () => {
     expect(count.n).toBeGreaterThan(0);
   });
 
-  // ─── F024: LIKE-wildcard escaping on match_pattern ───
-  //
-  // match_field is allowlisted against MATCH_FIELD_SQL, but match_pattern
-  // previously flowed into the LIKE clause as a bind parameter without
-  // wildcard escaping. An attacker (or a mistaken rule) with match_pattern
-  // = '%' mass-recategorizes the whole DB, and an `_` in a legitimate
-  // substring (e.g. 'Car_Main') silently wildcards the middle char.
-  it("F024: match_pattern='%' does NOT match every row (wildcard escaped)", () => {
+  it("--replace-range: user category edit survives matching recat rule (F034)", () => {
+    // Regression: before the excludeTransactionIds plumbing,
+    // applyRecategorizationRules ran on the full transactions table
+    // post-import and could silently overwrite user category/subcategory
+    // edits that runAppleImport's Pass-1/Pass-2 snapshot had just
+    // restored. The restoredIds set tracks rows where the user had a
+    // non-null category or subcategory in the snapshot; passing it as
+    // excludeTransactionIds immunizes them from auto-recat.
     const db = freshDb();
-    runAppleImport(db, { csvPath: path, balance: 0 });
 
-    // A literal `%` substring shouldn't exist in any seeded Apple row
-    // description — so the rule should match ZERO transactions.
+    // Seed the initial import (Poke -> FOOD_AND_DRINK / FOOD_AND_DRINK_RESTAURANT).
+    runAppleImport(db, { csvPath: path, balance: 0 });
+    const pokeBefore: any = db
+      .prepare(`SELECT transaction_id FROM transactions WHERE merchant_name = 'Poke Tiki Costa Mesa'`)
+      .get();
+    expect(pokeBefore).toBeDefined();
+
+    // User manually overrides Poke's category (AI "categorize_transaction"
+    // or direct UPDATE — the source path doesn't matter, what matters is
+    // the stored category diverges from Apple's default).
+    db.prepare(`UPDATE transactions SET category = ?, subcategory = NULL WHERE transaction_id = ?`).run(
+      "GENERAL_MERCHANDISE",
+      pokeBefore.transaction_id
+    );
+
+    // A recat rule whose pattern matches Poke and would push it back to
+    // FOOD_AND_DRINK. Without the exclude list this overwrites the user's
+    // GENERAL_MERCHANDISE edit on the post-import recat pass, and the
+    // 'Edits preserved: N' summary ends up lying.
     db.prepare(
       `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
        VALUES (?, ?, ?, ?, ?)`
-    ).run("name", "%", "GENERAL_MERCHANDISE", null, "wide-open");
+    ).run("merchant_name", "%Poke%", "FOOD_AND_DRINK", null, "Poke -> Food");
 
-    const before: any[] = db.prepare(`SELECT transaction_id, category FROM transactions`).all();
-    const recat = applyRecategorizationRules(db);
+    // Re-import with --replace-range. runAppleImport restores the user
+    // category via the snapshot and returns restoredIds containing the
+    // Poke transaction_id.
+    const result = runAppleImport(db, { csvPath: path, balance: 0, replaceRange: true });
+    expect(result.restoredIds.size).toBe(1);
+    const pokeAfter: any = db
+      .prepare(`SELECT transaction_id, category FROM transactions WHERE merchant_name = 'Poke Tiki Costa Mesa'`)
+      .get();
+    expect(result.restoredIds.has(pokeAfter.transaction_id)).toBe(true);
+    expect(pokeAfter.category).toBe("GENERAL_MERCHANDISE");
 
-    // Pre-F024: '%' matched every row and recat.transactionsUpdated was
-    // the full transaction count, wiping every category. Post-F024: zero
-    // matches because the pattern is treated literally.
+    // Run the post-import recat pass with the exclude list — the user's
+    // category MUST survive.
+    const recat = applyRecategorizationRules(db, undefined, {
+      excludeTransactionIds: result.restoredIds,
+    });
     expect(recat.transactionsUpdated).toBe(0);
+    const pokeFinal: any = db
+      .prepare(`SELECT category FROM transactions WHERE transaction_id = ?`)
+      .get(pokeAfter.transaction_id);
+    expect(pokeFinal.category).toBe("GENERAL_MERCHANDISE");
 
-    // Nothing changed.
-    const after: any[] = db.prepare(`SELECT transaction_id, category FROM transactions`).all();
-    expect(after.length).toBe(before.length);
-    const catsBefore = new Map(before.map((r: any) => [r.transaction_id, r.category]));
-    for (const row of after) {
-      expect(row.category).toBe(catsBefore.get(row.transaction_id));
-    }
+    // Negative check: without the exclude list, recat WOULD fire. Confirms
+    // the exclude plumbing is the thing protecting the row, not some
+    // unrelated guard.
+    const recatNoExclude = applyRecategorizationRules(db);
+    expect(recatNoExclude.transactionsUpdated).toBe(1);
+    const pokeOverwritten: any = db
+      .prepare(`SELECT category FROM transactions WHERE transaction_id = ?`)
+      .get(pokeAfter.transaction_id);
+    expect(pokeOverwritten.category).toBe("FOOD_AND_DRINK");
   });
 
-  it("F024: match_pattern containing `_` does NOT single-char-wildcard", () => {
-    const db = freshDb();
-    runAppleImport(db, { csvPath: path, balance: 0 });
-
-    // The seeded CSV has a 'Poke Tiki' row. A pattern 'P_ke Tiki' with `_`
-    // as a literal character should NOT match — `_` is SQL's single-char
-    // wildcard and would otherwise match 'Poke Tiki'.
-    db.prepare(
-      `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run("merchant_name", "P_ke Tiki", "GENERAL_MERCHANDISE", null, "single-char-wildcard");
-
-    const recat = applyRecategorizationRules(db);
-    // Pre-F024: `_` wildcarded, matching 'Poke Tiki' → transactionsUpdated >= 1.
-    // Post-F024: `_` literal, matching zero rows.
-    expect(recat.transactionsUpdated).toBe(0);
-  });
-
-  it("F024: literal substring pattern still matches (positive regression)", () => {
-    const db = freshDb();
-    runAppleImport(db, { csvPath: path, balance: 0 });
-
-    // 'Poke' is a real substring of the seeded merchant name
-    // 'Poke Tiki Costa Mesa'. Under F024 the engine wraps match_pattern in
-    // %..% after escaping, so callers pass a literal substring and get
-    // substring matching semantics. Positive regression: the common case
-    // must still fire.
-    db.prepare(
-      `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run("merchant_name", "Poke", "GENERAL_MERCHANDISE", null, "literal");
-
-    const recat = applyRecategorizationRules(db);
-    expect(recat.transactionsUpdated).toBeGreaterThanOrEqual(1);
-  });
 });
 
 describe("sanitizeForPrompt (merchant-name prompt injection defense)", () => {

@@ -25,6 +25,18 @@ const INCOME_EXCLUDED_SQL = INCOME_EXCLUDED_CATEGORIES.map(c => `'${c}'`).join('
  *     credit card as having "spent" $1k more than they actually consumed,
  *     and would double-count against the same $1k when it was originally
  *     charged to the card (already captured on the CC side).
+ *
+ *     Known caveat: the "already captured on the CC side" rationale holds
+ *     cleanly only for credit-card payments, where each original charge
+ *     was counted at purchase time. For external loans paid from a
+ *     checking account — mortgage, student, car — there is no mirror row,
+ *     so the payment IS real cash out. Users with those loans see headline
+ *     Expenses underreport real outflow and Savings Rate run artificially
+ *     high by the monthly debt service. An account-type-scoped filter
+ *     (exclude LOAN_PAYMENTS only when the originating account is
+ *     type='credit') would preserve the CC double-count fix while keeping
+ *     external-loan payments in Expenses, but requires a JOIN on accounts
+ *     at every spending query (~10 sites) and is deferred.
  * Previously a few queries (getCashFlow, getCashFlowThisMonth,
  * forecastBalance outflow) listed only TRANSFER_OUT/TRANSFER_IN, diverging
  * from showRecap and compareSpending and leading to a visible mismatch
@@ -74,11 +86,13 @@ export function normalizeOtherCategoryKey(cat: string | null | undefined): strin
  *
  * Callers MUST append `ESCAPE '\\'` to the LIKE clause to teach SQLite about
  * the escape byte — the helper backslash-escapes `%`, `_`, and `\` itself.
+ * Dropping the escape clause silently reverts the helper to a no-op because
+ * the `\` prefix is then a literal character.
  *
- * Exported so non-queries modules (e.g. recategorization.ts) can share the
- * same escape/ESCAPE-clause convention. Keep every caller paired with
- * `ESCAPE '\\'` in the SQL — dropping the escape clause silently reverts
- * the helper to a no-op because the `\` prefix is then a literal character.
+ * Used by queries/index.ts for user-supplied filter inputs (merchant,
+ * accountName, search query). Recategorization rules intentionally do NOT
+ * use this — match_pattern there is a raw LIKE argument supplied by the
+ * user/model, so they include their own %/_ wildcards.
  */
 export function escapeLikePattern(s: string): string {
   return s.replace(/[\\%_]/g, (c) => "\\" + c);

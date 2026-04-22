@@ -1246,7 +1246,15 @@ export async function runImportApple(
       // institutions) don't get an empty daily_scores table forever, and
       // `ray status` / `ray score` have a fresh row to show. Skipped on dry-run.
       // Recat runs BEFORE backfill so daily_scores reflects recat'd categories.
-      const localRecat = applyRecategorizationRules(db, bufLogger);
+      //
+      // --replace-range: pass result.restoredIds as excludeTransactionIds so
+      // auto-recat cannot silently overwrite user category/subcategory edits
+      // that runAppleImport just re-applied from the Pass-1/Pass-2 snapshot.
+      // Outside --replace-range, restoredIds is an empty Set so this is a
+      // no-op (the exclude-clause short-circuits when the set is empty).
+      const localRecat = applyRecategorizationRules(db, bufLogger, {
+        excludeTransactionIds: result.restoredIds,
+      });
       let localDaysScored = 0;
       let localScoredRange: { start: string; end: string } | null = null;
       let localNetWorthSnapshot: number | null = null;

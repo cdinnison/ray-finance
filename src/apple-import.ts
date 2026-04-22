@@ -65,6 +65,15 @@ export interface AppleImportResult {
    * entry in `warnings`. Null under regular inserts.
    */
   droppedCount: number | null;
+  /**
+   * --replace-range only: transaction_ids whose user-authored category or
+   * subcategory was re-applied from the snapshot. Callers pass this into
+   * applyRecategorizationRules as `excludeTransactionIds` so auto-recat
+   * cannot silently overwrite those user edits on the post-import pass.
+   * Empty Set (never null) so consumers can iterate without a null-guard;
+   * regular inserts produce an empty Set.
+   */
+  restoredIds: Set<string>;
 }
 
 interface ParsedRow {
@@ -497,6 +506,7 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
       balance: null,
       preservedCount: null,
       droppedCount: null,
+      restoredIds: new Set(),
     };
   }
 
@@ -546,6 +556,7 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
       balance: opts.balance ?? getAppleAccountBalance(db),
       preservedCount: null,
       droppedCount: null,
+      restoredIds: new Set(),
     };
   }
 
@@ -556,6 +567,18 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
   let rowsSkipped = 0;
   let preservedCount = 0;
   let droppedCount = 0;
+  // transaction_ids where the user's category/subcategory was re-applied
+  // from the snapshot (see restoredIds in AppleImportResult). Populated
+  // only under --replace-range; stays empty otherwise.
+  const restoredIds = new Set<string>();
+  // Map of freshly-inserted transaction_id → the (category, subcategory)
+  // Apple's CATEGORY_MAP would have assigned at INSERT time. The
+  // snapshot-restore phase uses this to distinguish "user-edited the
+  // category away from Apple's default" from "Apple-default was kept"
+  // — only the former needs recat-immunity. Populated only under
+  // --replace-range; empty map otherwise avoids the Map lookup overhead
+  // in the common regular-insert path.
+  const appleMapped = new Map<string, { category: string | null; subcategory: string | null }>();
 
   const insertInst = db.prepare(
     `INSERT INTO institutions (item_id, access_token, name, products)
@@ -733,6 +756,15 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
       );
       if (Number(info.changes) === 1) rowsInserted++;
       else rowsSkipped++;
+      // Stash the Apple-mapped (category, subcategory) so the snapshot-
+      // restore phase can tell "user edited away from Apple's default"
+      // from "snapshot value equals the Apple default we just re-inserted".
+      if (opts.replaceRange) {
+        appleMapped.set(id, {
+          category: mapping.category,
+          subcategory: mapping.subcategory,
+        });
+      }
     }
 
     // Re-apply snapshotted user fields onto the freshly-inserted rows.
@@ -787,6 +819,23 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
         if (Number(exact.changes) === 1) {
           claimed.add(p.transaction_id);
           preservedCount++;
+          // Track rows where the snapshot's category/subcategory diverged
+          // from what Apple just re-inserted — i.e., the user had actually
+          // overridden Apple's default before --replace-range. Only those
+          // rows need recat-immunity; rows whose snapshot value matches
+          // the Apple default are treated as "never edited" and remain
+          // eligible for auto-recat. Without this distinction, every
+          // --replace-range would globally disable recat on every
+          // Apple-mapped row, defeating the feature for rules that fire
+          // on Apple's default categories.
+          const apple = appleMapped.get(p.transaction_id);
+          const categoryOverridden =
+            p.category !== null && p.category !== (apple?.category ?? null);
+          const subcategoryOverridden =
+            p.subcategory !== null && p.subcategory !== (apple?.subcategory ?? null);
+          if (categoryOverridden || subcategoryOverridden) {
+            restoredIds.add(p.transaction_id);
+          }
           continue;
         }
         needsFallback.push(p);
@@ -816,6 +865,17 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
           );
           claimed.add(candidates[0].transaction_id);
           preservedCount++;
+          // Same Apple-default divergence check as Pass 1 — the matched
+          // candidate's new transaction_id is the key into appleMapped
+          // (the INSERT pass stashed it under the fresh id).
+          const apple = appleMapped.get(candidates[0].transaction_id);
+          const categoryOverridden =
+            p.category !== null && p.category !== (apple?.category ?? null);
+          const subcategoryOverridden =
+            p.subcategory !== null && p.subcategory !== (apple?.subcategory ?? null);
+          if (categoryOverridden || subcategoryOverridden) {
+            restoredIds.add(candidates[0].transaction_id);
+          }
           continue;
         }
         // 0 or >1 unclaimed candidates — can't safely re-apply. Record
@@ -846,5 +906,6 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
     balance: opts.balance ?? getAppleAccountBalance(db),
     preservedCount: opts.replaceRange ? preservedCount : null,
     droppedCount: opts.replaceRange ? droppedCount : null,
+    restoredIds,
   };
 }

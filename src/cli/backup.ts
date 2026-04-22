@@ -97,15 +97,28 @@ export function runImport(inputPath: string): void {
     insertBudget.run(b.category, b.monthly_limit, b.period);
   }
 
-  // Restore recat rules (skip exact duplicates, including target_subcategory)
+  // Restore recat rules (skip exact duplicates, including target_subcategory).
+  // Empty / whitespace-only match_patterns are rejected — a backup payload
+  // carrying one is either corrupt or from a pre-validation era; silently
+  // persisting would mass-rewrite on the next sync (empty pattern with a
+  // future wildcard-escape layer) or create a dead rule (empty pattern
+  // under pass-through LIKE). Either way, not worth preserving.
   const existingRule = db.prepare(
     "SELECT 1 FROM recategorization_rules WHERE match_field = ? AND match_pattern = ? AND target_category = ? AND COALESCE(target_subcategory, '') = COALESCE(?, '')"
   );
   const insertRule = db.prepare("INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label) VALUES (?, ?, ?, ?, ?)");
+  let skippedEmpty = 0;
   for (const r of backup.recat_rules) {
+    if (typeof r.match_pattern !== "string" || r.match_pattern.trim() === "") {
+      skippedEmpty++;
+      continue;
+    }
     if (!existingRule.get(r.match_field, r.match_pattern, r.target_category, r.target_subcategory)) {
       insertRule.run(r.match_field, r.match_pattern, r.target_category, r.target_subcategory, r.label);
     }
+  }
+  if (skippedEmpty > 0) {
+    console.warn(chalk.yellow(`  Skipped ${skippedEmpty} recat rule(s) with empty match_pattern.`));
   }
 
   // Restore settings

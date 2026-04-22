@@ -154,7 +154,17 @@ export function migrate(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS recategorization_rules (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       match_field TEXT NOT NULL,
-      match_pattern TEXT NOT NULL,
+      -- CHECK rejects empty / whitespace-only patterns at the storage
+      -- layer. An empty match_pattern used to produce '%%' under the
+      -- F024 escape/wrap layer (mass-recategorization); that wrap is
+      -- reverted now, but the CHECK is still cheap belt-and-braces
+      -- against any future writer that bypasses add_recat_rule and
+      -- backup-import validation. Existing DBs created before this
+      -- CHECK landed keep their CHECK-less schema — the application-
+      -- layer guards (src/ai/tools.ts add_recat_rule, src/cli/backup.ts
+      -- runImport, src/recategorization.ts applyRecategorizationRules)
+      -- catch empty patterns there.
+      match_pattern TEXT NOT NULL CHECK (trim(match_pattern) != ''),
       target_category TEXT NOT NULL,
       target_subcategory TEXT,
       label TEXT

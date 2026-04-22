@@ -132,7 +132,7 @@ describe("recategorization rules", () => {
     db.prepare(`INSERT INTO transactions (transaction_id, account_id, amount, date, name, category) VALUES (?, ?, ?, ?, ?, ?)`)
       .run("t1", "a1", 50, "2025-01-15", "AMAZON MARKETPLACE", "GENERAL_MERCHANDISE");
     db.prepare(`INSERT INTO recategorization_rules (match_field, match_pattern, target_category, label) VALUES (?, ?, ?, ?)`)
-      .run("name", "AMAZON", "GENERAL_MERCHANDISE_ONLINE", "Amazon → Online Shopping");
+      .run("name", "%AMAZON%", "GENERAL_MERCHANDISE_ONLINE", "Amazon → Online Shopping");
 
     await runDailySync(db);
 
@@ -191,7 +191,7 @@ describe("recategorization rules", () => {
     // Recat rule that will match the old Amazon transaction (it's currently
     // GENERAL_MERCHANDISE; the rule upgrades it to GENERAL_MERCHANDISE_ONLINE).
     db.prepare(`INSERT INTO recategorization_rules (match_field, match_pattern, target_category, label) VALUES (?, ?, ?, ?)`)
-      .run("merchant_name", "amazon", "GENERAL_MERCHANDISE_ONLINE", "Amazon → Online Shopping");
+      .run("merchant_name", "%amazon%", "GENERAL_MERCHANDISE_ONLINE", "Amazon → Online Shopping");
 
     await runDailySync(db);
 
@@ -226,7 +226,7 @@ describe("recategorization rules", () => {
 
     // No prior daily_scores rows — currentStart defaults to `yesterday`.
     db.prepare(`INSERT INTO recategorization_rules (match_field, match_pattern, target_category, label) VALUES (?, ?, ?, ?)`)
-      .run("merchant_name", "amazon", "GENERAL_MERCHANDISE_ONLINE", "Amazon → Online Shopping");
+      .run("merchant_name", "%amazon%", "GENERAL_MERCHANDISE_ONLINE", "Amazon → Online Shopping");
 
     await runDailySync(db);
 

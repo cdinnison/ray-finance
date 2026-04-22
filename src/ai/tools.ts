@@ -320,7 +320,7 @@ export const toolDefinitions: ToolDefinition[] = [
       type: "object" as const,
       properties: {
         match_field: { type: "string", description: "Field to match: name, merchant_name" },
-        match_pattern: { type: "string", description: "Pattern to match (case-insensitive literal substring — wildcard chars like % and _ are escaped before matching)" },
+        match_pattern: { type: "string", description: "Pattern to match (case-insensitive substring)" },
         target_category: { type: "string", description: "Category to assign" },
         target_subcategory: { type: "string", description: "Subcategory (optional)" },
         label: { type: "string", description: "Label to apply (optional)" },
@@ -991,6 +991,18 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       const allowedFields = ["name", "merchant_name", "category", "subcategory"];
       if (!allowedFields.includes(toolInput.match_field)) {
         return `Invalid match_field "${toolInput.match_field}". Must be one of: ${allowedFields.join(", ")}`;
+      }
+      // Reject empty / whitespace-only patterns. An empty-string pattern
+      // bound into LIKE matches no rows, but a pattern of '%' (or any
+      // all-wildcard string) would mass-recategorize — and more to the
+      // point, any empty-intent rule is always a bug. Catch at the API
+      // layer so the model gets a clear error instead of storing a
+      // dead-or-dangerous rule.
+      if (
+        typeof toolInput.match_pattern !== "string" ||
+        toolInput.match_pattern.trim() === ""
+      ) {
+        return `match_pattern cannot be empty or whitespace.`;
       }
       db.prepare(
         `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label) VALUES (?, ?, ?, ?, ?)`

@@ -56,7 +56,7 @@ describe("applyRecategorizationRules — target_subcategory NULL semantics", () 
       subcategory: "GENERAL_MERCHANDISE_ONLINE_MARKETPLACES",
     });
     seedRule(db, {
-      pattern: "AMAZON",
+      pattern: "%AMAZON%",
       target_category: "GENERAL_MERCHANDISE",
       target_subcategory: null,
       label: "Amazon → General Merchandise",
@@ -83,7 +83,7 @@ describe("applyRecategorizationRules — target_subcategory NULL semantics", () 
       subcategory: "FOOD_AND_DRINK_GROCERIES",
     });
     seedRule(db, {
-      pattern: "AMAZON",
+      pattern: "%AMAZON%",
       target_category: "GENERAL_MERCHANDISE",
       target_subcategory: null,
     });
@@ -106,7 +106,7 @@ describe("applyRecategorizationRules — target_subcategory NULL semantics", () 
       subcategory: null,
     });
     seedRule(db, {
-      pattern: "AMAZON",
+      pattern: "%AMAZON%",
       target_category: "GENERAL_MERCHANDISE",
       target_subcategory: null,
     });
@@ -129,7 +129,7 @@ describe("applyRecategorizationRules — target_subcategory NULL semantics", () 
       subcategory: "FOOD_AND_DRINK_RESTAURANT",
     });
     seedRule(db, {
-      pattern: "STARBUCKS",
+      pattern: "%STARBUCKS%",
       target_category: "FOOD_AND_DRINK",
       target_subcategory: "FOOD_AND_DRINK_COFFEE",
     });
@@ -140,5 +140,102 @@ describe("applyRecategorizationRules — target_subcategory NULL semantics", () 
     const row = readTxn(db, "t1");
     expect(row.category).toBe("FOOD_AND_DRINK");
     expect(row.subcategory).toBe("FOOD_AND_DRINK_COFFEE");
+  });
+});
+
+describe("applyRecategorizationRules — empty-pattern defense-in-depth (F052)", () => {
+  it("schema CHECK rejects empty match_pattern on fresh DB", () => {
+    // New DBs created after the CHECK landed block empty/whitespace
+    // patterns at the storage layer — the first line of defense.
+    const db = createTestDb();
+    expect(() =>
+      db.prepare(
+        `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label) VALUES (?, ?, ?, ?, ?)`
+      ).run("name", "", "FOOD_AND_DRINK", null, "empty")
+    ).toThrow();
+    expect(() =>
+      db.prepare(
+        `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label) VALUES (?, ?, ?, ?, ?)`
+      ).run("name", "   ", "FOOD_AND_DRINK", null, "whitespace")
+    ).toThrow();
+  });
+
+  it("applyRecategorizationRules skips empty-pattern rules on pre-CHECK DBs", () => {
+    // Existing user DBs created before the CHECK don't get retroactively
+    // constrained (no migration). The app-layer guard in the rule loop is
+    // what protects them — simulate that state by rebuilding the table
+    // without the CHECK, insert an empty rule, then verify the loop
+    // skips it with a loud error instead of running '%' / '%   %' mass-
+    // recategorization SQL.
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    migrate(db);
+    db.prepare(`INSERT INTO institutions (item_id, access_token, name, products) VALUES (?, ?, ?, ?)`)
+      .run("i1", "manual", "Test", "[]");
+    db.prepare(`INSERT INTO accounts (account_id, item_id, name, type, current_balance) VALUES (?, ?, ?, ?, ?)`)
+      .run("a1", "i1", "Card", "credit", 0);
+    // Drop + recreate without CHECK to simulate a pre-CHECK DB.
+    db.prepare(`DROP TABLE recategorization_rules`).run();
+    db.prepare(
+      `CREATE TABLE recategorization_rules (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         match_field TEXT NOT NULL,
+         match_pattern TEXT NOT NULL,
+         target_category TEXT NOT NULL,
+         target_subcategory TEXT,
+         label TEXT
+       )`
+    ).run();
+
+    // Seed a transaction that would match '%' (catches mass-rewrite
+    // behavior if the guard fails).
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, category) VALUES (?, ?, ?, ?, ?, ?)`
+    ).run("t1", "a1", 10, "2026-01-01", "AMAZON", "GENERAL_MERCHANDISE");
+
+    // Bypass the CHECK — direct INSERT with empty pattern.
+    db.prepare(
+      `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label) VALUES (?, ?, ?, ?, ?)`
+    ).run("name", "", "HACKED", null, "empty-pattern");
+    db.prepare(
+      `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label) VALUES (?, ?, ?, ?, ?)`
+    ).run("name", "   ", "HACKED", null, "whitespace-pattern");
+
+    const result = applyRecategorizationRules(db, SILENT_LOGGER);
+
+    // Both rules must skip; no transactions touched.
+    expect(result.rulesSkipped).toBe(2);
+    expect(result.transactionsUpdated).toBe(0);
+    const row = readTxn(db, "t1");
+    expect(row.category).toBe("GENERAL_MERCHANDISE");
+  });
+});
+
+describe("add_recat_rule AI tool — empty-pattern rejection (F052)", () => {
+  it("rejects empty match_pattern with a clear error", async () => {
+    const { executeTool } = await import("./ai/tools.js");
+    const db = createTestDb();
+    const result = await executeTool(db, "add_recat_rule", {
+      match_field: "name",
+      match_pattern: "",
+      target_category: "FOOD_AND_DRINK",
+    });
+    expect(result).toMatch(/cannot be empty/i);
+    // Nothing got persisted.
+    const count: any = db.prepare(`SELECT COUNT(*) as n FROM recategorization_rules`).get();
+    expect(count.n).toBe(0);
+  });
+
+  it("rejects whitespace-only match_pattern", async () => {
+    const { executeTool } = await import("./ai/tools.js");
+    const db = createTestDb();
+    const result = await executeTool(db, "add_recat_rule", {
+      match_field: "name",
+      match_pattern: "   ",
+      target_category: "FOOD_AND_DRINK",
+    });
+    expect(result).toMatch(/cannot be empty/i);
+    const count: any = db.prepare(`SELECT COUNT(*) as n FROM recategorization_rules`).get();
+    expect(count.n).toBe(0);
   });
 });
