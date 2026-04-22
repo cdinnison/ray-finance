@@ -31,6 +31,7 @@ vi.mock("./config.js", () => ({
 
 import { runDailySync } from "./daily-sync.js";
 import { syncBalances, syncTransactions } from "./plaid/sync.js";
+import { calculateDailyScore } from "./scoring/index.js";
 
 type DB = InstanceType<typeof Database>;
 
@@ -153,5 +154,91 @@ describe("recategorization rules", () => {
     // Transaction should be unchanged
     const txn = db.prepare(`SELECT category FROM transactions WHERE transaction_id = 't1'`).get() as any;
     expect(txn.category).toBe("OTHER");
+  });
+
+  it("widens rescore window to cover older transactions newly matched by a recat rule (F034)", async () => {
+    // Regression: when a rule newly matches transactions older than the
+    // newest daily_scores row, those older dates must also be re-scored so
+    // daily_scores reflects the post-recat category breakdown. Without the
+    // widening, only [newestScored.date+1 .. yesterday] gets re-scored and
+    // the old dates remain stale.
+    db.prepare(`INSERT INTO accounts (account_id, item_id, name, type, current_balance) VALUES (?, ?, ?, ?, ?)`)
+      .run("a1", "i1", "Checking", "depository", 1000);
+
+    // Compute dates relative to today so the test doesn't drift against
+    // runDailySync's `yesterday` and `newestScored`.
+    const today = new Date();
+    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const twoDaysAgo = new Date(today.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const oldDate = new Date(today.getTime() - 120 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    // Seed an old transaction (~120 days ago) that's about to be recategorized.
+    db.prepare(`INSERT INTO transactions (transaction_id, account_id, amount, date, name, merchant_name, category) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run("t_old", "a1", 25, oldDate, "AMAZON MARKETPLACE #123", "Amazon Marketplace", "GENERAL_MERCHANDISE");
+    // Seed a recent transaction so there's nothing to gap-backfill (newestScored
+    // == two days ago, yesterday is scored unconditionally, no gap between).
+    db.prepare(`INSERT INTO transactions (transaction_id, account_id, amount, date, name, category) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run("t_recent", "a1", 10, twoDaysAgo, "COFFEE", "FOOD_AND_DRINK");
+
+    // Seed a daily_scores row for two-days-ago so the gap-backfill loop's
+    // cursor starts at yesterday — no existing backfill work, only the
+    // recat widening should push older dates into the rescore list.
+    db.prepare(
+      `INSERT INTO daily_scores (date, score, restaurant_count, shopping_count, food_spend, total_spend, zero_spend, no_restaurant_streak, no_shopping_streak, on_pace_streak)
+       VALUES (?, 80, 0, 0, 0, 0, 0, 1, 1, 1)`
+    ).run(twoDaysAgo);
+
+    // Recat rule that will match the old Amazon transaction (it's currently
+    // GENERAL_MERCHANDISE; the rule upgrades it to GENERAL_MERCHANDISE_ONLINE).
+    db.prepare(`INSERT INTO recategorization_rules (match_field, match_pattern, target_category, label) VALUES (?, ?, ?, ?)`)
+      .run("merchant_name", "%amazon%", "GENERAL_MERCHANDISE_ONLINE", "Amazon → Online Shopping");
+
+    await runDailySync(db);
+
+    // Rule fired.
+    const txn = db.prepare(`SELECT category FROM transactions WHERE transaction_id = 't_old'`).get() as any;
+    expect(txn.category).toBe("GENERAL_MERCHANDISE_ONLINE");
+
+    // calculateDailyScore was called with the old date (the whole point of F034):
+    // the recat widening prepended it to the rescore list so its daily_scores
+    // row reflects the post-recat category.
+    const scoredDates = (calculateDailyScore as any).mock.calls.map((c: any[]) => c[1]) as string[];
+    expect(scoredDates).toContain(oldDate);
+    expect(scoredDates).toContain(yesterday);
+  });
+
+  it("does not synthesize scores for dates before MIN(transactions.date) (F034 clamp)", async () => {
+    // Regression: the widening must clamp against MIN(transactions.date) so
+    // a recat that reaches an old row doesn't cause calculateDailyScore to
+    // be invoked with dates predating the first-ever transaction. Mirrors
+    // the clamp runImportApple applies at commands.ts:1297-1300.
+    db.prepare(`INSERT INTO accounts (account_id, item_id, name, type, current_balance) VALUES (?, ?, ?, ?, ?)`)
+      .run("a1", "i1", "Checking", "depository", 1000);
+
+    const today = new Date();
+    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    // firstTxn sits between earliestAffected and currentStart — the clamp
+    // must push widenStart up to firstTxn so earlier dates aren't synthesized.
+    const firstTxnDate = new Date(today.getTime() - 10 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    db.prepare(`INSERT INTO transactions (transaction_id, account_id, amount, date, name, merchant_name, category) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run("t1", "a1", 25, firstTxnDate, "AMAZON PURCHASE", "Amazon", "GENERAL_MERCHANDISE");
+
+    // No prior daily_scores rows — currentStart defaults to `yesterday`.
+    db.prepare(`INSERT INTO recategorization_rules (match_field, match_pattern, target_category, label) VALUES (?, ?, ?, ?)`)
+      .run("merchant_name", "%amazon%", "GENERAL_MERCHANDISE_ONLINE", "Amazon → Online Shopping");
+
+    await runDailySync(db);
+
+    const scoredDates = (calculateDailyScore as any).mock.calls.map((c: any[]) => c[1]) as string[];
+    // Every scored date should be >= firstTxnDate (clamp) and <= yesterday (end).
+    for (const d of scoredDates) {
+      expect(d >= firstTxnDate).toBe(true);
+      expect(d <= yesterday).toBe(true);
+    }
+    // The clamp should have pushed widenStart to firstTxnDate (the earliest
+    // affected date equals firstTxnDate here, so the clamp is a no-op; but the
+    // range start must never go below firstTxnDate).
+    expect(scoredDates).toContain(firstTxnDate);
   });
 });

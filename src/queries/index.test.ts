@@ -20,6 +20,8 @@ import {
   getCashFlow,
   getIncome,
   INCOME_EXCLUDED_CATEGORIES,
+  SPENDING_EXCLUDED_CATEGORIES,
+  normalizeOtherCategoryKey,
 } from "./index.js";
 
 type DB = InstanceType<typeof Database>;
@@ -214,6 +216,10 @@ describe("getCashFlowThisMonth", () => {
     seedAccount(db, { id: "a", type: "depository", balance: 5000 });
     seedTransaction(db, { id: "t1", accountId: "a", amount: -500, date: today(), name: "Transfer", category: "TRANSFER_IN" });
     seedTransaction(db, { id: "t2", accountId: "a", amount: 500, date: today(), name: "Transfer", category: "TRANSFER_OUT" });
+    // Apple Daily Cash clawback: Debit rows map to TRANSFER_IN with amount > 0.
+    // These are cash-reward corrections, not real spending — must be excluded
+    // from expense totals per apple-import.ts:91-94 contract.
+    seedTransaction(db, { id: "t3", accountId: "a", amount: 1.23, date: today(), name: "Apple Daily Cash clawback", category: "TRANSFER_IN" });
 
     const cf = getCashFlowThisMonth(db);
     expect(cf.income).toBe(0);
@@ -255,6 +261,83 @@ describe("getTransactionsFiltered", () => {
     const txns = getTransactionsFiltered(db, { limit: 1 });
     expect(txns.length).toBe(1);
   });
+
+  it("populates account_name and account_id on every returned row (JOIN sanity)", () => {
+    // Load-bearing for the AI's transaction-by-account capability: without
+    // account_name on each row, the model can't distinguish Apple Card rows
+    // from Plaid rows that share a generic merchant shape.
+    const rows = getTransactionsFiltered(db, {});
+    expect(rows.length).toBe(3);
+    for (const r of rows) {
+      // beforeEach seeds account "a" (the id doubles as the name default).
+      expect(r.account_id).toBe("a");
+      expect(r.account_name).toBe("a");
+    }
+  });
+
+  it("filters by accountName (case-insensitive partial match) across multiple accounts", () => {
+    // Add a second account + transaction to prove the filter actually
+    // scopes — not just a pass-through that ignores the filter.
+    seedAccount(db, { id: "apple", type: "credit", balance: 1000, name: "Apple Card" });
+    seedTransaction(db, { id: "t-apple", accountId: "apple", amount: 22.79, date: "2025-03-01", name: "Poke Tiki Costa Mesa", category: "FOOD_AND_DRINK" });
+
+    const exact = getTransactionsFiltered(db, { accountName: "Apple Card" });
+    expect(exact.map(t => t.transaction_id)).toEqual(["t-apple"]);
+    expect(exact[0].account_name).toBe("Apple Card");
+
+    // Partial substring.
+    const partial = getTransactionsFiltered(db, { accountName: "apple" });
+    expect(partial.map(t => t.transaction_id)).toEqual(["t-apple"]);
+
+    // Case-insensitive (SQLite's default LIKE is ASCII-case-insensitive, but
+    // the query uses LOWER() on both sides for defensiveness against
+    // accented/special characters — this test pins the contract).
+    const upper = getTransactionsFiltered(db, { accountName: "APPLE" });
+    expect(upper.map(t => t.transaction_id)).toEqual(["t-apple"]);
+
+    // Non-matching filter returns empty array, not all rows.
+    const none = getTransactionsFiltered(db, { accountName: "Nonexistent Bank" });
+    expect(none).toEqual([]);
+
+    // Filter on the other account still returns its rows.
+    const other = getTransactionsFiltered(db, { accountName: "a" });
+    // Both "a" (exact) and "Apple Card" (contains 'a') match the LIKE '%a%'
+    // pattern. Beyond trivial here — the contract is substring, not exact.
+    expect(other.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("escapes LIKE wildcards in accountName filter (F027)", () => {
+    // No account in the seed set is literally named '%'. Before the escape,
+    // '%' interpolated into `LOWER(a.name) LIKE LOWER('%%%')` matched every
+    // account — silently widening scope beyond the caller's intent. With
+    // escaping + ESCAPE '\\', '%' should match no account.
+    const none = getTransactionsFiltered(db, { accountName: "%" });
+    expect(none).toEqual([]);
+
+    // `_` is a single-char wildcard. With escape, `Checking_Main` should only
+    // match the literal account with that name, not `CheckingXMain`.
+    seedAccount(db, { id: "acc-underscore", type: "depository", balance: 1, name: "Checking_Main" });
+    seedTransaction(db, { id: "t-underscore", accountId: "acc-underscore", amount: 10, date: "2025-03-01", name: "Underscore txn" });
+    seedAccount(db, { id: "acc-xmain", type: "depository", balance: 1, name: "CheckingXMain" });
+    seedTransaction(db, { id: "t-xmain", accountId: "acc-xmain", amount: 20, date: "2025-03-01", name: "X txn" });
+
+    const exact = getTransactionsFiltered(db, { accountName: "Checking_Main" });
+    expect(exact.map(t => t.transaction_id)).toEqual(["t-underscore"]);
+  });
+
+  it("escapes LIKE wildcards in merchant filter (F027)", () => {
+    // merchant='%' should not match every transaction via wildcard injection.
+    const none = getTransactionsFiltered(db, { merchant: "%" });
+    expect(none).toEqual([]);
+
+    // `_` wildcard: 'St_rbucks' must not match 'Starbucks' after escaping.
+    const noUnderscoreWildcard = getTransactionsFiltered(db, { merchant: "St_rbucks" });
+    expect(noUnderscoreWildcard).toEqual([]);
+
+    // Literal match still works.
+    const exact = getTransactionsFiltered(db, { merchant: "Starbucks" });
+    expect(exact.length).toBe(1);
+  });
 });
 
 describe("searchTransactions", () => {
@@ -272,6 +355,16 @@ describe("searchTransactions", () => {
   it("matches on category", () => {
     const results = searchTransactions(db, "TRANSPORT");
     expect(results.length).toBe(1);
+  });
+
+  it("escapes LIKE wildcards in query (F027)", () => {
+    // '%' must not become a wildcard via interpolation.
+    const none = searchTransactions(db, "%");
+    expect(none).toEqual([]);
+
+    // `_` must not single-char-wildcard; 'Ub_r' should not match 'Uber*'.
+    const noSingleCharWildcard = searchTransactions(db, "Ub_r");
+    expect(noSingleCharWildcard).toEqual([]);
   });
 });
 
@@ -365,6 +458,68 @@ describe("getDebts", () => {
     const result = getDebts(db);
     expect(result.totalDebt).toBe(500);
   });
+
+  it("unions manual liabilities with liabilities-table debts", () => {
+    // Manual liability (accounts only, no liabilities row) — ray add pattern.
+    seedAccount(db, { id: "manual-car-loan", type: "loan", balance: 25000, name: "Car Loan" });
+    // Liabilities-table entry (Apple import / Plaid pattern).
+    seedAccount(db, { id: "manual-apple-card", type: "credit", balance: 1000, name: "Apple Card" });
+    db.prepare(`INSERT INTO liabilities (account_id, type, current_balance) VALUES (?, ?, ?)`)
+      .run("manual-apple-card", "credit", 1000);
+
+    const result = getDebts(db);
+    expect(result.totalDebt).toBe(26000);
+    expect(result.debts.map((d) => d.name).sort()).toEqual(["Apple Card", "Car Loan"]);
+  });
+
+  it("includes Plaid mortgages with NULL liabilities.current_balance", () => {
+    // Plaid writes current_balance=NULL for mortgages (plaid/sync.ts:410) —
+    // actual balance lives in accounts.current_balance. getDebts must COALESCE.
+    seedAccount(db, { id: "mortgage-1", type: "loan", balance: 350000, name: "Home Mortgage" });
+    db.prepare(
+      `INSERT INTO liabilities (account_id, type, interest_rate, current_balance, minimum_payment, next_payment_due)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run("mortgage-1", "mortgage", 6.5, null, 2100, "2026-05-01");
+
+    const result = getDebts(db);
+    expect(result.totalDebt).toBe(350000);
+    expect(result.debts).toHaveLength(1);
+    expect(result.debts[0].name).toBe("Home Mortgage");
+    expect(result.debts[0].rate).toBe(6.5);
+    expect(result.debts[0].minPayment).toBe(2100);
+  });
+
+  it("includes credit cards with liabilities.current_balance=0 but non-zero accounts balance", () => {
+    // Plaid writes last_statement_balance into liabilities.current_balance for
+    // credit cards (plaid/sync.ts:381). After a statement is paid off, that can
+    // be 0 while accounts.current_balance reflects new post-statement charges.
+    // getDebts must fall through to the live accounts balance (treat 0 like NULL).
+    seedAccount(db, { id: "cc-paid-statement", type: "credit", balance: 500, name: "Apple Card" });
+    db.prepare(
+      `INSERT INTO liabilities (account_id, type, interest_rate, current_balance, minimum_payment)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run("cc-paid-statement", "credit", 22.24, 0, 25);
+
+    const result = getDebts(db);
+    expect(result.debts).toHaveLength(1);
+    expect(result.totalDebt).toBe(500);
+    expect(result.debts[0].name).toBe("Apple Card");
+    expect(result.debts[0].balance).toBe(500);
+    expect(result.debts[0].rate).toBe(22.24);
+    expect(result.debts[0].minPayment).toBe(25);
+  });
+
+  it("does not duplicate when an account is in both liabilities and accounts", () => {
+    // Plaid-synced credit card: lives in both tables.
+    seedAccount(db, { id: "chase-cc", type: "credit", balance: 3000, name: "Chase" });
+    db.prepare(`INSERT INTO liabilities (account_id, type, interest_rate, current_balance) VALUES (?, ?, ?, ?)`)
+      .run("chase-cc", "credit", 19.99, 3000);
+
+    const result = getDebts(db);
+    expect(result.debts).toHaveLength(1);
+    expect(result.totalDebt).toBe(3000);
+    expect(result.debts[0].rate).toBe(19.99);
+  });
 });
 
 describe("getCashFlow", () => {
@@ -379,6 +534,20 @@ describe("getCashFlow", () => {
     expect(cf.net).toBe(3000);
     expect(cf.savingsRate).toBe(60);
     expect(cf.monthly.length).toBe(1);
+  });
+
+  it("excludes positive-amount TRANSFER_IN (Apple Debit clawback) from expenses", () => {
+    // Apple Daily Cash clawback: Debit rows map to TRANSFER_IN with amount > 0.
+    // Must be excluded from both the main expenses aggregate and the monthly
+    // CASE expression per apple-import.ts:91-94 contract.
+    seedAccount(db, { id: "a", type: "depository", balance: 5000 });
+    seedTransaction(db, { id: "t1", accountId: "a", amount: -5000, date: "2025-01-15", name: "Salary", category: "INCOME" });
+    seedTransaction(db, { id: "t2", accountId: "a", amount: 2000, date: "2025-01-20", name: "Rent", category: "RENT_AND_UTILITIES" });
+    seedTransaction(db, { id: "t3", accountId: "a", amount: 1.23, date: "2025-01-22", name: "Apple clawback", category: "TRANSFER_IN" });
+
+    const cf = getCashFlow(db, "2025-01-01", "2025-01-31");
+    expect(cf.expenses).toBe(2000); // clawback excluded
+    expect(cf.monthly[0].expenses).toBe(2000); // monthly CASE must agree
   });
 });
 
@@ -443,6 +612,111 @@ describe("getCashFlowThisMonth excludes LOAN_PAYMENTS from income", () => {
   });
 });
 
+// NULL-category spending rows (Apple "Other" and unmapped Apple categories
+// produce category=NULL; plaid/sync.ts also writes NULL when
+// personal_finance_category is missing). SQLite three-valued logic drops
+// NULL rows from `NOT IN (...)` filters — the regression fixed in F032
+// required rewriting those filters to `(category IS NULL OR NOT IN (...))`.
+describe("queries include NULL-category spending rows (F032 regression)", () => {
+  beforeEach(() => {
+    seedAccount(db, { id: "a", type: "depository", balance: 5000 });
+    // Income: one real paycheck
+    seedTransaction(db, { id: "inc", accountId: "a", amount: -2000, date: "2025-01-10", name: "Paycheck", category: "INCOME" });
+    // A normal categorized spend
+    seedTransaction(db, { id: "food", accountId: "a", amount: 50, date: "2025-01-12", name: "Groceries", category: "FOOD_AND_DRINK" });
+    // A transfer we want excluded (the invariant we must preserve)
+    seedTransaction(db, { id: "xfr", accountId: "a", amount: 500, date: "2025-01-13", name: "Transfer Out", category: "TRANSFER_OUT" });
+    // A NULL-category spend (Apple "Other" or unmapped). The whole point of
+    // F032: this row must be counted in every spending total.
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, category, pending) VALUES (?, ?, ?, ?, ?, NULL, 0)`
+    ).run("null-cat", "a", 35, "2025-01-15", "Misc Apple");
+  });
+
+  it("getCashFlow counts NULL-category rows in expenses and excludes TRANSFER_OUT", () => {
+    const cf = getCashFlow(db, "2025-01-01", "2025-01-31");
+    // 50 (food) + 35 (null) — TRANSFER_OUT excluded
+    expect(cf.expenses).toBe(85);
+    expect(cf.income).toBe(2000);
+    expect(cf.net).toBe(1915);
+  });
+
+  it("getCashFlowThisMonth counts NULL-category rows (as long as dates are current)", () => {
+    // Insert a fresh NULL-category row dated today so the "this month" query sees it
+    const d = today();
+    seedAccount(db, { id: "b", type: "depository", balance: 100 });
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, category, pending) VALUES (?, ?, ?, ?, ?, NULL, 0)`
+    ).run("null-today", "b", 12, d, "Null cat today");
+    seedTransaction(db, { id: "food-today", accountId: "b", amount: 20, date: d, name: "Coffee", category: "FOOD_AND_DRINK" });
+
+    const cf = getCashFlowThisMonth(db);
+    // 12 (null) + 20 (food) — both must count
+    expect(cf.expenses).toBeGreaterThanOrEqual(32);
+  });
+
+  it("compareSpending INCLUDES NULL-category rows and coalesces them into a single 'Other' bucket", () => {
+    // compareSpending is now NULL-inclusive to match every other expense-side
+    // query (getCashFlow, getCashFlowThisMonth, showRecap's totalSpent, etc.).
+    // Previously NULL was excluded as a carve-out to dodge duplicate-'Other'
+    // UI rows (categoryLabel(null) and categoryLabel('Other') both render as
+    // "Other"). That carve-out produced inconsistent totals: the headline
+    // spend number and the pct-change baseline were computed from different
+    // row sets. The invariant is preserved instead by coalescing NULL into
+    // the literal 'Other' key in the JS aggregation step so a NULL row and a
+    // literal 'Other' row merge into one bucket before p1Map/p2Map are built.
+    const cmp = compareSpending(db, "2024-12-01", "2024-12-31", "2025-01-01", "2025-01-31");
+    // 50 (food) + 35 (NULL) — TRANSFER_OUT excluded, no LOAN_PAYMENTS present
+    expect(cmp.period2Total).toBe(85);
+  });
+
+  it("compareSpending merges a NULL-category row and a literal 'Other' row into one categories[] entry", () => {
+    // Regression for the NULL/literal-'Other' duplicate-row guarantee: even
+    // when a period has BOTH a NULL-category row and an explicit 'Other'
+    // category row, they must surface as a single categories[] entry keyed
+    // on 'Other' (not two rows that render identically). The JS coalesce
+    // maps NULL → 'Other' BEFORE p1Map/p2Map are built, so an explicit
+    // 'Other' row is summed into the same bucket.
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, category, pending) VALUES (?, ?, ?, ?, ?, 'Other', 0)`
+    ).run("literal-other", "a", 20, "2025-01-16", "Other literal");
+
+    const cmp = compareSpending(db, "2024-12-01", "2024-12-31", "2025-01-01", "2025-01-31");
+    // p2: 50 (FOOD) + 35 (NULL) + 20 (literal 'Other') = 105. Categories
+    // must have one 'Other' entry merging the 35 + 20 contributions.
+    expect(cmp.period2Total).toBe(105);
+    const others = cmp.categories.filter(c => c.category === "Other");
+    expect(others).toHaveLength(1);
+    expect(others[0].period2).toBe(55);
+  });
+
+  // F032 companion invariant: the NULL-inclusion fix is expense-side only.
+  // A NULL-category negative-amount row (amount < 0) is overwhelmingly an
+  // Apple refund or a pre-mapping TRANSFER_IN — NOT real income — so it
+  // must NOT flow into any income aggregate.
+  it("getCashFlow does NOT count NULL-category negative-amount rows as income", () => {
+    // Seed an additional NULL-category refund in the same period as the paycheck
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, category, pending) VALUES (?, ?, ?, ?, ?, NULL, 0)`
+    ).run("null-refund", "a", -45, "2025-01-20", "Apple refund");
+
+    const cf = getCashFlow(db, "2025-01-01", "2025-01-31");
+    // Only the real INCOME row (-2000) counts; -45 NULL row excluded.
+    expect(cf.income).toBe(2000);
+  });
+
+  it("getIncome does NOT count NULL-category negative-amount rows", () => {
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, category, pending) VALUES (?, ?, ?, ?, ?, NULL, 0)`
+    ).run("null-refund", "a", -45, "2025-01-20", "Apple refund");
+
+    const results = getIncome(db, "2025-01-01", "2025-01-31");
+    // Only the Paycheck source appears; no refund/NULL row.
+    expect(results).toHaveLength(1);
+    expect(results[0].total).toBe(2000);
+  });
+});
+
 describe("forecastBalance excludes LOAN_PAYMENTS from inflow", () => {
   it("avgMonthlyInflow excludes LOAN_PAYMENTS and TRANSFER_IN", () => {
     seedAccount(db, { id: "a", type: "depository", balance: 10000 });
@@ -458,5 +732,166 @@ describe("forecastBalance excludes LOAN_PAYMENTS from inflow", () => {
     const forecast = forecastBalance(db);
     // avgMonthlyInflow should be ~5000, not 6500 (with LOAN_PAYMENTS) or 7000 (with both)
     expect(forecast.avgMonthlyInflow).toBeCloseTo(5000, -2);
+  });
+});
+
+// ─── F010: expense-side LOAN_PAYMENTS exclusion parity ───
+//
+// Every expense-side filter must exclude LOAN_PAYMENTS so "Recap" and
+// "Cash flow expenses" agree for the same period. Before F010, getCashFlow,
+// getCashFlowThisMonth, and forecastBalance outflow only excluded
+// TRANSFER_OUT/TRANSFER_IN — letting Apple "Payment" rows (amount > 0 on
+// the checking-side mirror, category LOAN_PAYMENTS) inflate totals while
+// showRecap/compareSpending excluded them.
+describe("SPENDING_EXCLUDED_CATEGORIES exports", () => {
+  it("includes LOAN_PAYMENTS alongside TRANSFER_OUT/TRANSFER_IN", () => {
+    expect(SPENDING_EXCLUDED_CATEGORIES).toContain("TRANSFER_OUT");
+    expect(SPENDING_EXCLUDED_CATEGORIES).toContain("TRANSFER_IN");
+    expect(SPENDING_EXCLUDED_CATEGORIES).toContain("LOAN_PAYMENTS");
+  });
+});
+
+describe("expense-side LOAN_PAYMENTS exclusion parity (F010)", () => {
+  beforeEach(() => {
+    seedAccount(db, { id: "a", type: "depository", balance: 5000 });
+    // A regular expense
+    seedTransaction(db, { id: "rent", accountId: "a", amount: 2000, date: "2025-01-10", name: "Rent", category: "RENT_AND_UTILITIES" });
+    // Apple "Payment" on the checking-side mirror: LOAN_PAYMENTS, amount > 0.
+    // Previously counted as an expense in getCashFlow / getCashFlowThisMonth /
+    // forecastBalance outflow while showRecap/compareSpending excluded it.
+    seedTransaction(db, { id: "cc-pmt", accountId: "a", amount: 1500, date: "2025-01-15", name: "Apple Card Payment", category: "LOAN_PAYMENTS" });
+  });
+
+  it("getCashFlow excludes LOAN_PAYMENTS from expenses (main + monthly CASE)", () => {
+    const cf = getCashFlow(db, "2025-01-01", "2025-01-31");
+    // 2000 (rent), 1500 (LOAN_PAYMENTS) excluded
+    expect(cf.expenses).toBe(2000);
+    expect(cf.monthly[0].expenses).toBe(2000);
+  });
+
+  it("getCashFlowThisMonth excludes LOAN_PAYMENTS from expenses", () => {
+    // Re-seed using today()'s date so the "this month" window catches it.
+    seedAccount(db, { id: "b", type: "depository", balance: 5000 });
+    seedTransaction(db, { id: "b-rent", accountId: "b", amount: 2000, date: today(), name: "Rent", category: "RENT_AND_UTILITIES" });
+    seedTransaction(db, { id: "b-pmt", accountId: "b", amount: 1500, date: today(), name: "Apple Card Payment", category: "LOAN_PAYMENTS" });
+
+    const cf = getCashFlowThisMonth(db);
+    // The Jan 2025 seeds from beforeEach won't fall in today's month; only
+    // the "b-rent" row contributes here (2000), not "b-pmt" (LOAN_PAYMENTS).
+    expect(cf.expenses).toBe(2000);
+  });
+
+  it("forecastBalance excludes LOAN_PAYMENTS from avgMonthlyOutflow", () => {
+    // Need a 3-month window; seed recent dates so the 3-month average is
+    // stable. Each month mirrors the contract: one 3000 expense + one 1000
+    // LOAN_PAYMENTS row (must not inflate the average).
+    seedAccount(db, { id: "c", type: "depository", balance: 10000 });
+    for (let m = 1; m <= 3; m++) {
+      const date = daysAgo(m * 30);
+      seedTransaction(db, { id: `c-inc-${m}`, accountId: "c", amount: -5000, date, name: "Paycheck", category: "INCOME" });
+      seedTransaction(db, { id: `c-exp-${m}`, accountId: "c", amount: 3000, date, name: "Rent", category: "RENT_AND_UTILITIES" });
+      seedTransaction(db, { id: `c-lp-${m}`, accountId: "c", amount: 1000, date, name: "Apple Card Payment", category: "LOAN_PAYMENTS" });
+    }
+
+    const forecast = forecastBalance(db, "c");
+    // avgMonthlyOutflow = 3000 (rent), LOAN_PAYMENTS excluded. Without F010,
+    // this would have been 4000 (3000 + 1000 LOAN_PAYMENTS).
+    expect(forecast.avgMonthlyOutflow).toBeCloseTo(3000, -2);
+  });
+});
+
+// ─── F006: NULL + literal 'OTHER' uppercase merging ───
+//
+// categoryLabel renders BOTH NULL and 'OTHER' (uppercase, Plaid PFC
+// SCREAMING_SNAKE fallback) as "Other". Without the shared
+// normalizeOtherCategoryKey helper, a month with both produced two
+// separate buckets that rendered as duplicate "Other" rows. The four call
+// sites (get_spending_summary, showSpending, showRecap top-cats,
+// compareSpending) must all route through the helper so the merge rule
+// stays consistent.
+describe("normalizeOtherCategoryKey helper (F006)", () => {
+  it("maps NULL and 'OTHER' (uppercase) to the same canonical key", () => {
+    expect(normalizeOtherCategoryKey(null)).toBe(null);
+    expect(normalizeOtherCategoryKey("OTHER")).toBe(null);
+  });
+
+  it("leaves other categories untouched", () => {
+    expect(normalizeOtherCategoryKey("FOOD_AND_DRINK")).toBe("FOOD_AND_DRINK");
+    expect(normalizeOtherCategoryKey("Other")).toBe("Other");
+  });
+
+  it("treats undefined as NULL", () => {
+    expect(normalizeOtherCategoryKey(undefined)).toBe(null);
+  });
+});
+
+describe("compareSpending merges NULL + 'OTHER' (uppercase) into one bucket (F006)", () => {
+  it("a NULL-category row and a literal 'OTHER' (uppercase) row merge into one categories[] entry", () => {
+    // Regression: Plaid writes 'OTHER' (SCREAMING_SNAKE) as a fallback
+    // personal_finance_category.primary when PFC mapping fails; Apple
+    // import writes NULL for unmapped categories. Both render as "Other"
+    // via categoryLabel — before F006 they produced two distinct buckets.
+    seedAccount(db, { id: "a", type: "depository", balance: 5000 });
+    // NULL-category row
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, category, pending) VALUES (?, ?, ?, ?, ?, NULL, 0)`
+    ).run("null-row", "a", 30, "2025-01-10", "Apple unmapped");
+    // Literal uppercase 'OTHER' row (Plaid PFC fallback)
+    seedTransaction(db, { id: "other-row", accountId: "a", amount: 45, date: "2025-01-12", name: "Plaid Other", category: "OTHER" });
+
+    const cmp = compareSpending(db, "2024-12-01", "2024-12-31", "2025-01-01", "2025-01-31");
+    // Both included, total 75. Must surface as ONE "Other" entry (not two).
+    expect(cmp.period2Total).toBe(75);
+    const others = cmp.categories.filter(c => c.category === "Other");
+    expect(others).toHaveLength(1);
+    expect(others[0].period2).toBe(75);
+  });
+});
+
+// ─── F008: searchTransactions projects account_name ───
+//
+// The AI's search_transactions tool must return the same row shape as
+// get_transactions so the model can answer account-scoped questions
+// ("what did I spend on my Apple Card?") with either tool. Before F008,
+// searchTransactions returned no account_name; get_transactions did.
+describe("searchTransactions projects account_name via LEFT JOIN (F008)", () => {
+  beforeEach(() => {
+    seedAccount(db, { id: "apple", type: "credit", balance: 1000, name: "Apple Card" });
+    seedAccount(db, { id: "checking", type: "depository", balance: 5000, name: "Checking" });
+    seedTransaction(db, { id: "apple-uber", accountId: "apple", amount: 25.50, date: "2025-01-15", name: "Uber", category: "TRANSPORTATION" });
+    seedTransaction(db, { id: "checking-uber", accountId: "checking", amount: 30.00, date: "2025-01-16", name: "Uber", category: "TRANSPORTATION" });
+  });
+
+  it("returns account_name on every row", () => {
+    const results = searchTransactions(db, "Uber");
+    expect(results).toHaveLength(2);
+    const byId = new Map(results.map(r => [r.transaction_id, r]));
+    expect(byId.get("apple-uber")?.account_name).toBe("Apple Card");
+    expect(byId.get("checking-uber")?.account_name).toBe("Checking");
+  });
+
+  it("returns account_id on every row (matches getTransactionsFiltered shape)", () => {
+    const results = searchTransactions(db, "Uber");
+    for (const r of results) {
+      expect(r.account_id).toBeTruthy();
+    }
+  });
+
+  it("LEFT JOIN keeps orphan transactions visible with account_name=null", () => {
+    // FK enforcement prevents a bare orphan insert. Temporarily disable FK
+    // to simulate an orphan transaction (post-delete snapshot, or a row
+    // inserted via a migration that didn't enforce the FK). The LEFT JOIN
+    // must still surface the row with account_name=NULL instead of
+    // silently dropping it.
+    db.pragma("foreign_keys = OFF");
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, category, pending) VALUES (?, ?, ?, ?, ?, ?, 0)`
+    ).run("orphan-uber", "missing-acct", 12.50, "2025-01-17", "Uber", "TRANSPORTATION");
+    db.pragma("foreign_keys = ON");
+
+    const results = searchTransactions(db, "Uber");
+    const orphan = results.find(r => r.transaction_id === "orphan-uber");
+    expect(orphan).toBeDefined();
+    expect(orphan?.account_name).toBe(null);
   });
 });

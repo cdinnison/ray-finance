@@ -52,6 +52,9 @@ export function runImport(inputPath: string): void {
     backup = JSON.parse(readFileSync(inputPath, "utf-8"));
   } catch {
     console.error(chalk.red("Invalid backup file."));
+    if (inputPath.toLowerCase().endsWith(".csv")) {
+      console.error(chalk.dim("Did you mean 'ray import-apple'? That command imports Apple Card CSV exports."));
+    }
     process.exit(1);
   }
 
@@ -94,13 +97,28 @@ export function runImport(inputPath: string): void {
     insertBudget.run(b.category, b.monthly_limit, b.period);
   }
 
-  // Restore recat rules (skip exact duplicates)
-  const existingRule = db.prepare("SELECT 1 FROM recategorization_rules WHERE match_field = ? AND match_pattern = ? AND target_category = ?");
+  // Restore recat rules (skip exact duplicates, including target_subcategory).
+  // Empty / whitespace-only match_patterns are rejected — a backup payload
+  // carrying one is either corrupt or from a pre-validation era; silently
+  // persisting would mass-rewrite on the next sync (empty pattern with a
+  // future wildcard-escape layer) or create a dead rule (empty pattern
+  // under pass-through LIKE). Either way, not worth preserving.
+  const existingRule = db.prepare(
+    "SELECT 1 FROM recategorization_rules WHERE match_field = ? AND match_pattern = ? AND target_category = ? AND COALESCE(target_subcategory, '') = COALESCE(?, '')"
+  );
   const insertRule = db.prepare("INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label) VALUES (?, ?, ?, ?, ?)");
+  let skippedEmpty = 0;
   for (const r of backup.recat_rules) {
-    if (!existingRule.get(r.match_field, r.match_pattern, r.target_category)) {
+    if (typeof r.match_pattern !== "string" || r.match_pattern.trim() === "") {
+      skippedEmpty++;
+      continue;
+    }
+    if (!existingRule.get(r.match_field, r.match_pattern, r.target_category, r.target_subcategory)) {
       insertRule.run(r.match_field, r.match_pattern, r.target_category, r.target_subcategory, r.label);
     }
+  }
+  if (skippedEmpty > 0) {
+    console.warn(chalk.yellow(`  Skipped ${skippedEmpty} recat rule(s) with empty match_pattern.`));
   }
 
   // Restore settings
@@ -122,5 +140,6 @@ export function runImport(inputPath: string): void {
   console.log(chalk.dim(`  ${backup.memories.length} memories, ${backup.goals.length} goals, ${backup.budgets.length} budgets, ${backup.recat_rules.length} rules`));
   console.log(chalk.dim(`\nNext steps:`));
   console.log(chalk.dim(`  1. Run 'ray link' to re-connect your bank accounts`));
-  console.log(chalk.dim(`  2. Run 'ray sync' to pull transactions\n`));
+  console.log(chalk.dim(`  2. Run 'ray sync' to pull transactions`));
+  console.log(chalk.dim(`  3. Run 'ray import-apple <path>' to re-import Apple Card transactions (if you had any)\n`));
 }

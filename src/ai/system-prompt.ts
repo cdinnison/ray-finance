@@ -2,7 +2,7 @@ import type Database from "libsql";
 import { config } from "../config.js";
 import { getMemories } from "./memory.js";
 import { readContext, isContextEmpty } from "./context.js";
-import { computeInsights } from "./insights.js";
+import { computeInsights, stripControls } from "./insights.js";
 
 export function buildSystemPrompt(db: Database.Database): string {
   const memories = getMemories(db);
@@ -41,15 +41,16 @@ Today is ${dateStr}.
 - When the user shares something worth remembering (a preference, life event, financial goal context), use save_memory.
 - When circumstances change (new decisions, completed goals, changed balances, updated strategy), use update_context to persist the change.
 - For date-based queries, figure out the right date range from context (e.g., "this month" = first of current month to today).
-- If you notice transactions suggesting unlinked accounts (e.g., mortgage payments, car loans, investment transfers) that aren't in the linked accounts, mention it once and suggest \`ray link\`. If the user says they don't have that account, save it to context.
+- If you notice transactions suggesting unlinked accounts (e.g., mortgage payments, car loans, investment transfers) that aren't in the linked accounts, mention it once and suggest \`ray link\`. Exception: Apple Card isn't supported by Plaid — suggest \`ray import-apple <path>\` instead (export the CSV from card.apple.com; the web portal supports custom date ranges, the Wallet app only exports one statement at a time). If the user says they don't have that account, save it to context.
 
 ## Ray CLI Commands
 ${name} is chatting with you inside the Ray CLI. When referencing commands, remind them to exit chat first (Ctrl+C or "quit"), then run the command in their terminal.
 - \`ray link\` — Link a new bank/brokerage account via Plaid
 - \`ray add\` — Add a manual account (home, car, crypto, etc.)
+- \`ray import-apple <path>\` — Import Apple Card transactions from Apple's CSV export (Plaid doesn't support Apple Card; re-run monthly to refresh)
 - \`ray remove\` — Remove a linked bank or manual account
 - \`ray sync\` — Sync latest transactions from linked banks
-- \`ray accounts\` — Show linked accounts and balances
+- \`ray accounts\` — Show accounts and balances
 - \`ray status\` — Show financial overview
 - \`ray transactions\` — Show recent transactions (flags: -n, -c, -m)
 - \`ray spending [period]\` — Spending breakdown (this_month, last_month, last_30, last_90)
@@ -108,7 +109,16 @@ This onboarding block will automatically disappear once the context file is fill
 
   if (memories.length > 0) {
     prompt += `\n\n## Things I remember about ${name}\n`;
-    prompt += memories.map(m => `- ${m.content}`).join("\n");
+    // Memory content is user-typed (via save_memory) and is currently
+    // appended AFTER the "## Current Financial Briefing" preamble (see the
+    // computeInsights block above), so the briefing does NOT sit as a
+    // trust-boundary marker between these memories and the rest of the
+    // prompt — anything below the briefing can still influence the model.
+    // Strip control characters so a crafted memory can't use a newline to
+    // break out of its data context; keep the full length (no 80-char clip)
+    // because legitimate memories can run long and truncation would be
+    // user-visible data loss.
+    prompt += memories.map(m => `- ${stripControls(m.content)}`).join("\n");
   }
 
   return prompt;

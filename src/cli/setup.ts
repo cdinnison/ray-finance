@@ -400,8 +400,19 @@ export async function runSetup(): Promise<void> {
       try {
         const { getDb } = await import("../db/connection.js");
         const { runDailySync } = await import("../daily-sync.js");
-        await runDailySync(getDb());
-        spinner.succeed("Transactions synced!");
+        const syncResult = await runDailySync(getDb());
+        // Partial-failure signal: post-sync derivation or achievement check
+        // may have thrown even though transactions committed cleanly. Warn
+        // instead of succeed so onboarding doesn't claim "Transactions
+        // synced!" on a half-synced state (mirror runSync in commands.ts).
+        const postWarns: string[] = [];
+        if (syncResult.derivationError) postWarns.push(`derivation failed: ${syncResult.derivationError}`);
+        if (syncResult.achievementError) postWarns.push(`achievement check failed: ${syncResult.achievementError}`);
+        if (postWarns.length > 0) {
+          spinner.warn(`Transactions synced, but post-sync steps failed: ${postWarns.join("; ")}`);
+        } else {
+          spinner.succeed("Transactions synced!");
+        }
         console.log(chalk.dim("  Note: some banks take a few hours to deliver all transactions."));
         console.log(chalk.dim("  Ray will re-sync in the background to pick up anything missing.\n"));
       } catch (err: any) {
