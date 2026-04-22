@@ -303,6 +303,39 @@ describe("getTransactionsFiltered", () => {
     // pattern. Beyond trivial here — the contract is substring, not exact.
     expect(other.length).toBeGreaterThanOrEqual(3);
   });
+
+  it("escapes LIKE wildcards in accountName filter (F027)", () => {
+    // No account in the seed set is literally named '%'. Before the escape,
+    // '%' interpolated into `LOWER(a.name) LIKE LOWER('%%%')` matched every
+    // account — silently widening scope beyond the caller's intent. With
+    // escaping + ESCAPE '\\', '%' should match no account.
+    const none = getTransactionsFiltered(db, { accountName: "%" });
+    expect(none).toEqual([]);
+
+    // `_` is a single-char wildcard. With escape, `Checking_Main` should only
+    // match the literal account with that name, not `CheckingXMain`.
+    seedAccount(db, { id: "acc-underscore", type: "depository", balance: 1, name: "Checking_Main" });
+    seedTransaction(db, { id: "t-underscore", accountId: "acc-underscore", amount: 10, date: "2025-03-01", name: "Underscore txn" });
+    seedAccount(db, { id: "acc-xmain", type: "depository", balance: 1, name: "CheckingXMain" });
+    seedTransaction(db, { id: "t-xmain", accountId: "acc-xmain", amount: 20, date: "2025-03-01", name: "X txn" });
+
+    const exact = getTransactionsFiltered(db, { accountName: "Checking_Main" });
+    expect(exact.map(t => t.transaction_id)).toEqual(["t-underscore"]);
+  });
+
+  it("escapes LIKE wildcards in merchant filter (F027)", () => {
+    // merchant='%' should not match every transaction via wildcard injection.
+    const none = getTransactionsFiltered(db, { merchant: "%" });
+    expect(none).toEqual([]);
+
+    // `_` wildcard: 'St_rbucks' must not match 'Starbucks' after escaping.
+    const noUnderscoreWildcard = getTransactionsFiltered(db, { merchant: "St_rbucks" });
+    expect(noUnderscoreWildcard).toEqual([]);
+
+    // Literal match still works.
+    const exact = getTransactionsFiltered(db, { merchant: "Starbucks" });
+    expect(exact.length).toBe(1);
+  });
 });
 
 describe("searchTransactions", () => {
@@ -320,6 +353,16 @@ describe("searchTransactions", () => {
   it("matches on category", () => {
     const results = searchTransactions(db, "TRANSPORT");
     expect(results.length).toBe(1);
+  });
+
+  it("escapes LIKE wildcards in query (F027)", () => {
+    // '%' must not become a wildcard via interpolation.
+    const none = searchTransactions(db, "%");
+    expect(none).toEqual([]);
+
+    // `_` must not single-char-wildcard; 'Ub_r' should not match 'Uber*'.
+    const noSingleCharWildcard = searchTransactions(db, "Ub_r");
+    expect(noSingleCharWildcard).toEqual([]);
   });
 });
 

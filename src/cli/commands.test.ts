@@ -279,4 +279,55 @@ describe("cleanupDerivedAfterRemove", () => {
     ).get(ninetyDaysAgo, yesterday) as { c: number };
     expect(windowRows.c).toBe(0);
   });
+
+  it("does not fabricate daily_scores rows when only far-in-the-past transactions remain (F006 mixed-source regression)", () => {
+    // Regression: post-remove cleanup previously synthesized zero_spend=1
+    // rows for every day in the 90-day window whenever ANY transaction
+    // existed on-or-before the scored date. An Apple-only user whose CSV
+    // data sat 6+ months in the past could therefore see 90 fabricated
+    // rows spike no_restaurant_streak / no_shopping_streak / zero_spend
+    // counts and falsely unlock Monk Mode / Detoxed / Home Chef on remove.
+    // The tightened hasPriorActivity (±30-day window) closes this path;
+    // stale rows get DELETEd, and no new rows are written for the gap.
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    migrate(db);
+
+    db.prepare(
+      `INSERT INTO institutions (item_id, access_token, name, products)
+       VALUES ('manual-apple', 'manual', 'Apple', '[]')`
+    ).run();
+    db.prepare(
+      `INSERT INTO accounts (account_id, item_id, name, type, current_balance)
+       VALUES ('apple-card', 'manual-apple', 'Apple Card', 'credit', 0)`
+    ).run();
+    // Seed a transaction ~200 days in the past — well outside the 90-day
+    // cleanup window AND outside the ±30-day hasPriorActivity window for
+    // every day in that cleanup range.
+    const oldDate = new Date(Date.now() - 200 * 86400000).toISOString().slice(0, 10);
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, pending, iso_currency_code)
+       VALUES ('old-t', 'apple-card', 10, ?, 'Old Coffee', 0, 'USD')`
+    ).run(oldDate);
+
+    cleanupDerivedAfterRemove(db as any, []);
+
+    // No daily_scores rows should be fabricated in the 90-day rescore
+    // window — every day in that window is >30 days from the only surviving
+    // transaction, so hasPriorActivity must skip persistence.
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    const windowRows = db.prepare(
+      `SELECT COUNT(*) as c FROM daily_scores WHERE date BETWEEN ? AND ?`
+    ).get(ninetyDaysAgo, yesterday) as { c: number };
+    expect(windowRows.c).toBe(0);
+
+    // And the streak peaks that would drive achievement unlocks stay at 0.
+    const peak = db.prepare(
+      `SELECT MAX(no_restaurant_streak) as nr, MAX(no_shopping_streak) as ns, MAX(on_pace_streak) as op FROM daily_scores`
+    ).get() as { nr: number | null; ns: number | null; op: number | null };
+    expect(peak.nr ?? 0).toBe(0);
+    expect(peak.ns ?? 0).toBe(0);
+    expect(peak.op ?? 0).toBe(0);
+  });
 });

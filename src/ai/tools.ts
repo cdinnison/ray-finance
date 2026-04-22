@@ -12,7 +12,7 @@ import { getLatestScore, getMonthlySavings } from "../scoring/index.js";
 import { generateAlerts } from "../alerts/index.js";
 import { saveMemory, getMemories } from "./memory.js";
 import { readContext, writeContext, replaceContextSection } from "./context.js";
-import { sanitizeForPrompt } from "./insights.js";
+import { sanitizeForPrompt, sanitizeForPromptCell } from "./insights.js";
 
 export const toolDefinitions: ToolDefinition[] = [
   // --- Existing tools ---
@@ -234,7 +234,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // --- New: Debts ---
   {
     name: "get_debts",
-    description: "List all debts with balances, interest rates, and minimum payments. Note: rate may render as 'APR unknown' when the source (e.g. Apple Card CSV import) doesn't carry APR data — treat unknown APRs as high-rate retail-card debt (~20%) for payoff prioritization, not as 0%.",
+    description: "List all debts with balances, interest rates, and minimum payments. Note: rate may render as 'APR unknown' when the source (e.g. Apple Card CSV import) doesn't carry APR data. For card-shaped debts (type='credit' and balance <= $50k, e.g. Apple Card), treat an unknown APR as a high-rate retail-card rate (~20%) for payoff prioritization, not as 0%. For loan-shaped debts (mortgage/student/car/large-balance loans), do NOT assume a retail-card rate — ask the user for the APR before prioritizing payoff. This matches calculate_debt_payoff's simulation skip guard.",
     input_schema: { type: "object" as const, properties: {}, required: [] },
   },
   {
@@ -367,12 +367,18 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       if (txns.length === 0) return "No transactions found matching those filters.";
       // Sanitize user-controlled text (account name, transaction name, merchant)
       // so an injected instruction can't smuggle directives to the model.
+      // Use sanitizeForPromptCell (not sanitizeForPrompt) because this row
+      // format is `|`-delimited: a merchant name containing a literal `|`
+      // character (e.g. "Foo | Bar Groceries") would otherwise spoof a fake
+      // account_name / amount / category column when the model parses the
+      // row. sanitizeForPromptCell replaces `|` with `/` before the regular
+      // control-char strip.
       // account_name is load-bearing for Apple-import: without it the model
       // can't distinguish Apple Card rows from Plaid rows when both feeds
       // share a generic merchant shape (e.g. "Poke Tiki Costa Mesa"). Falls
       // back to "—" for the LEFT JOIN edge case of a missing account.
       return txns.map(t =>
-        `${t.date} | ${sanitizeForPrompt(t.account_name) || "—"} | ${sanitizeForPrompt(t.name)} | ${formatMoney(t.amount)} | ${categoryLabel(t.category)}`
+        `${t.date} | ${sanitizeForPromptCell(t.account_name) || "—"} | ${sanitizeForPromptCell(t.name)} | ${formatMoney(t.amount)} | ${categoryLabel(t.category)}`
       ).join("\n");
     }
 
@@ -380,13 +386,27 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       const period = toolInput.period || "this_month";
       const { resolvePeriod } = await import("../db/helpers.js");
       const { start, end } = resolvePeriod(period);
-      const rows = db.prepare(
+      const rawRows = db.prepare(
         `SELECT category, SUM(amount) as total, COUNT(*) as count FROM transactions
          WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
          AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))
          GROUP BY category ORDER BY total DESC`
-      ).all(start, end) as { category: string; total: number; count: number }[];
-      if (rows.length === 0) return "No spending found for that period.";
+      ).all(start, end) as { category: string | null; total: number; count: number }[];
+      if (rawRows.length === 0) return "No spending found for that period.";
+      // Merge NULL and literal 'OTHER' into a single "Other" bucket so the
+      // model doesn't see two duplicate "Other:" lines (from Apple-unmapped
+      // NULL rows + Plaid PFC fallback 'OTHER' rows) and mistake them for
+      // separate categories. Sum totals AND transaction counts across the
+      // merged bucket. Matches compareSpending's canonical pattern.
+      const rowMap = new Map<string | null, { total: number; count: number }>();
+      for (const r of rawRows) {
+        const key = r.category == null || r.category === "OTHER" ? null : r.category;
+        const prev = rowMap.get(key) ?? { total: 0, count: 0 };
+        rowMap.set(key, { total: prev.total + r.total, count: prev.count + r.count });
+      }
+      const rows = [...rowMap.entries()]
+        .map(([category, agg]) => ({ category, ...agg }))
+        .sort((a, b) => b.total - a.total);
       const grandTotal = rows.reduce((s, r) => s + r.total, 0);
       let result = `Spending ${start} to ${end}: ${formatMoney(grandTotal)} total\n\n`;
       result += rows.map(r => `${categoryLabel(r.category)}: ${formatMoney(r.total)} (${r.count} transactions)`).join("\n");
@@ -484,13 +504,13 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
     case "get_memories": {
       const memories = getMemories(db);
       if (memories.length === 0) return "No memories saved yet.";
-      // Memory content is user-typed (via save_memory). sanitizeForPrompt
-      // clips control chars AND truncates at 80 chars — memories can
-      // legitimately exceed 80 chars, so use a dedicated control-strip
-      // helper via sanitizeForPrompt's 80-char clip on this tool output
-      // is acceptable (the model can see "..." and re-ask if it needs the
-      // full memory). The defense is against control chars / newlines that
-      // would let crafted content inject instructions, not against length.
+      // Memory content is user-typed (via save_memory). sanitizeForPrompt is
+      // intentional here: it clips control chars AND truncates at 80 chars.
+      // The 80-char truncation is a known tradeoff for this tool's output —
+      // the model sees a trailing "…" and can re-ask if it needs the full
+      // memory. The load-bearing defense is the control-char strip, which
+      // blocks embedded newlines/tabs from smuggling instructions into the
+      // model's context; the length clip is incidental.
       return memories.map(m => `[${m.category}] ${sanitizeForPrompt(m.content)} (saved ${m.created_at})`).join("\n");
     }
 
@@ -514,7 +534,10 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
     case "search_transactions": {
       const results = searchTransactions(db, toolInput.query, toolInput.limit);
       if (results.length === 0) return `No transactions found matching "${sanitizeForPrompt(toolInput.query)}".`;
-      return results.map(t => `${t.date} | ${sanitizeForPrompt(t.name)}${t.merchant_name ? ` (${sanitizeForPrompt(t.merchant_name)})` : ""} | ${formatMoney(t.amount)} | ${categoryLabel(t.category)}`).join("\n");
+      // Pipe-delimited row format — use sanitizeForPromptCell on
+      // user-controllable fields so a crafted `|` in a transaction name /
+      // merchant name can't spoof fake columns downstream.
+      return results.map(t => `${t.date} | ${sanitizeForPromptCell(t.name)}${t.merchant_name ? ` (${sanitizeForPromptCell(t.merchant_name)})` : ""} | ${formatMoney(t.amount)} | ${categoryLabel(t.category)}`).join("\n");
     }
 
     case "categorize_transaction": {
@@ -611,7 +634,10 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       for (const h of port.holdings) {
         // Ticker + security name + account name all flow from broker-supplied
         // data / user account names — sanitize before LLM interpolation.
-        result += `\n${sanitizeForPrompt(h.ticker || h.security)} (${sanitizeForPrompt(h.account)}): ${formatMoney(h.value)} | ${h.quantity} shares | G/L: ${h.gainLoss >= 0 ? "+" : ""}${formatMoney(h.gainLoss)}`;
+        // Use sanitizeForPromptCell because the row format contains literal
+        // `|` separators; a security name or account name containing `|`
+        // would otherwise spoof fake columns.
+        result += `\n${sanitizeForPromptCell(h.ticker || h.security)} (${sanitizeForPromptCell(h.account)}): ${formatMoney(h.value)} | ${h.quantity} shares | G/L: ${h.gainLoss >= 0 ? "+" : ""}${formatMoney(h.gainLoss)}`;
       }
       return result;
     }
@@ -666,7 +692,7 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       const MAX_MONTHS = 600;
       const MIN_FLOOR = 50;
 
-      // Sort debts by strategy. For avalanche, treat rate===null as Infinity
+      // Sort debts by strategy. For avalanche, treat rate===null as -Infinity
       // for sort (so null-rate debts fall to the bottom like getDebts's
       // queries/index.ts ordering) — this keeps small unknown-rate retail
       // cards from jumping ahead of legitimately-high-rate debts. The
@@ -698,6 +724,14 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
         paidOffMonth: number | null;
       };
       const simDebts: SimDebt[] = [];
+      // Track simulated vs. skipped balance so the header and the
+      // "Debt-free by" line reflect what the simulation can actually
+      // deliver: skipped debts (unknown APR/minimum, mortgages, etc.) don't
+      // participate in the timeline and must NOT be lumped into a single
+      // "Total debt" that the user then pairs with a finish date derived
+      // only from simulated debts.
+      let simulatedTotal = 0;
+      let skippedTotal = 0;
 
       for (const debt of sorted) {
         if (debt.rate === 0 && debt.minPayment === 0) {
@@ -705,6 +739,7 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
             kind: "skip",
             text: `\n${sanitizeForPrompt(debt.name)}: ${formatMoney(debt.balance)} — no rate/payment info available`,
           });
+          skippedTotal += debt.balance;
           continue;
         }
         // rate === null: APR is genuinely unknown. Simulating at a
@@ -726,9 +761,11 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
             kind: "skip",
             text: `\n${sanitizeForPrompt(debt.name)} (${debt.type}): ${formatMoney(debt.balance)} — APR and/or minimum payment unknown; cannot simulate payoff. Ask the user for the APR and monthly payment.`,
           });
+          skippedTotal += debt.balance;
           continue;
         }
         const effectiveRate = debt.rate ?? ASSUMED_UNKNOWN_APR;
+        simulatedTotal += debt.balance;
         lines.push({ kind: "sim", idx: simDebts.length });
         simDebts.push({
           name: debt.name,
@@ -812,11 +849,21 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       // Render in original `sorted` order so the output reflects strategy
       // priority, not paid-off timing.
       let result = `Debt payoff simulation (${strategy} strategy, ${formatMoney(extraMonthly)} extra/mo):\n`;
-      result += `Total debt: ${formatMoney(d.totalDebt)}\n`;
+      // Split the total into simulated vs. unable-to-simulate so the header
+      // doesn't pretend the skipped debts (mortgages, unknown-APR loans)
+      // will be retired on the same timeline as the simulated ones. When
+      // nothing was skipped this renders the familiar single "Total debt"
+      // line; otherwise it surfaces both buckets separately.
+      if (skippedTotal > 0) {
+        result += `Simulated debt: ${formatMoney(simulatedTotal)} | Unable to simulate (APR/payment unknown): ${formatMoney(skippedTotal)}\n`;
+      } else {
+        result += `Total debt: ${formatMoney(d.totalDebt)}\n`;
+      }
 
       let totalInterest = 0;
       let maxMonths = 0;
       let anyStuck = false;
+      const anySkipped = skippedTotal > 0;
 
       for (const line of lines) {
         if (line.kind === "skip") {
@@ -844,10 +891,19 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       }
 
       result += `\n\nTotal interest: ${formatMoney(totalInterest)}`;
-      if (maxMonths > 0 && !anyStuck) {
+      if (maxMonths > 0 && !anyStuck && !anySkipped) {
         const finalDate = new Date();
         finalDate.setMonth(finalDate.getMonth() + maxMonths);
         result += ` | Debt-free by: ${finalDate.toISOString().slice(0, 7)}`;
+      } else if (maxMonths > 0 && !anyStuck && anySkipped) {
+        // Don't lie about "Debt-free by" when we couldn't simulate every
+        // debt: the mortgage / unknown-APR loans are still outstanding on
+        // that date. Surface the partial finish date and explicitly remind
+        // the model to ask for the missing APRs/payments to complete the
+        // picture.
+        const finalDate = new Date();
+        finalDate.setMonth(finalDate.getMonth() + maxMonths);
+        result += ` | Debt-free (simulated portion) by: ${finalDate.toISOString().slice(0, 7)} — additional debts above cannot be simulated; ask the user for their APR and minimum payment to include them.`;
       } else if (anyStuck) {
         result += ` | Some debts cannot reach payoff at current payment levels — increase extra_monthly or confirm minimum payment.`;
       }

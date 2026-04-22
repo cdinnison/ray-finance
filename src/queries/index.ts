@@ -11,6 +11,19 @@ export const INCOME_EXCLUDED_CATEGORIES = [
 
 const INCOME_EXCLUDED_SQL = INCOME_EXCLUDED_CATEGORIES.map(c => `'${c}'`).join(', ');
 
+/**
+ * Escape SQL LIKE wildcards in a user-supplied substring so it cannot widen
+ * the match. SQLite LIKE treats `%` as any-sequence and `_` as any-single-char;
+ * without escaping, an AI-steered input of `%` would match every row and `_`
+ * in a name like `Checking_Main` would wildcard the middle char.
+ *
+ * Callers MUST append `ESCAPE '\\'` to the LIKE clause to teach SQLite about
+ * the escape byte — the helper backslash-escapes `%`, `_`, and `\` itself.
+ */
+function escapeLikePattern(s: string): string {
+  return s.replace(/[\\%_]/g, (c) => "\\" + c);
+}
+
 export interface BudgetStatus {
   category: string;
   budget: number;
@@ -268,8 +281,12 @@ export function getTransactionsFiltered(
     params.push(filters.category, filters.category);
   }
   if (filters.merchant) {
-    conditions.push(`(t.merchant_name LIKE ? OR t.name LIKE ?)`);
-    params.push(`%${filters.merchant}%`, `%${filters.merchant}%`);
+    // Escape %/_/\\ so an AI-steered substring like `%` or `Best_Buy` can't
+    // widen the match into a wildcard. ESCAPE '\\' teaches SQLite that
+    // backslash is the escape byte.
+    conditions.push(`(t.merchant_name LIKE ? ESCAPE '\\' OR t.name LIKE ? ESCAPE '\\')`);
+    const pattern = `%${escapeLikePattern(filters.merchant)}%`;
+    params.push(pattern, pattern);
   }
   if (filters.accountName) {
     // Case-insensitive substring match against `accounts.name` — the label
@@ -278,9 +295,10 @@ export function getTransactionsFiltered(
     // for ASCII; defensive for account names with accented/special chars
     // (e.g. "Blue Cash Everyday®"). LEFT JOIN below keeps any orphan
     // transaction visible with account_name=NULL rather than silently
-    // dropping it from results.
-    conditions.push(`LOWER(a.name) LIKE LOWER(?)`);
-    params.push(`%${filters.accountName}%`);
+    // dropping it from results. Escape %/_/\\ so an AI-steered input
+    // like `%` can't widen the match to every account.
+    conditions.push(`LOWER(a.name) LIKE LOWER(?) ESCAPE '\\'`);
+    params.push(`%${escapeLikePattern(filters.accountName)}%`);
   }
   if (filters.minAmount !== undefined) {
     conditions.push(`t.amount >= ?`);
@@ -327,12 +345,16 @@ export function getIncome(db: Database, startDate: string, endDate: string): { s
 // --- Full-text search ---
 
 export function searchTransactions(db: Database, query: string, limit = 30): { transaction_id: string; name: string; merchant_name: string | null; amount: number; category: string; date: string }[] {
+  // Escape %/_/\\ so an AI-steered `%` can't match every row. ESCAPE '\\'
+  // teaches SQLite the escape byte; without it the LIKE pattern is wide
+  // open to wildcard injection.
+  const pattern = `%${escapeLikePattern(query)}%`;
   return db.prepare(
     `SELECT transaction_id, name, merchant_name, amount, category, date
      FROM transactions
-     WHERE (name LIKE ? OR merchant_name LIKE ? OR category LIKE ?)
+     WHERE (name LIKE ? ESCAPE '\\' OR merchant_name LIKE ? ESCAPE '\\' OR category LIKE ? ESCAPE '\\')
      ORDER BY date DESC LIMIT ?`
-  ).all(`%${query}%`, `%${query}%`, `%${query}%`, limit) as any[];
+  ).all(pattern, pattern, pattern, limit) as any[];
 }
 
 // --- Cash flow analysis ---

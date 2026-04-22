@@ -6,6 +6,16 @@ export interface RecategorizationResult {
   rulesEvaluated: number;
   rulesSkipped: number;
   transactionsUpdated: number;
+  /**
+   * Earliest date (YYYY-MM-DD) among transactions this run actually updated,
+   * or null when no rows were updated. Callers (runImportApple,
+   * runDailySync) use this to widen their daily_scores rescore window so
+   * older transactions that newly matched a rule get their scored days
+   * refreshed — without this, a rule that newly matches transactions
+   * predating the CSV range leaves stale daily_scores rows for the old
+   * dates.
+   */
+  earliestAffectedDate: string | null;
 }
 
 // Only known column names are allowed in `match_field` — the value flows into
@@ -44,6 +54,11 @@ export function applyRecategorizationRules(db: Database, logger: SyncLogger = co
 
   let rulesSkipped = 0;
   let transactionsUpdated = 0;
+  // Track the earliest date among rows this run actually updated so
+  // runImportApple's backfill window can widen to cover older transactions
+  // that newly matched a rule. Accumulated across all rules; stays null
+  // when nothing matched.
+  let earliestAffectedDate: string | null = null;
 
   // Atomicity: either all rules apply or none apply per run. Without this
   // wrapper, each UPDATE autocommits, so a mid-loop throw (SQLITE_BUSY, disk
@@ -85,6 +100,20 @@ export function applyRecategorizationRules(db: Database, logger: SyncLogger = co
       //     grocery subcategory). This matches the "leave alone when
       //     unspecified" convention used by the single-txn recat path in
       //     src/ai/tools.ts and the AI-tool schema hint.
+      //
+      // Capture MIN(date) of rows this rule WILL update BEFORE the UPDATE
+      // runs — after the UPDATE those rows already match the target and
+      // are no longer in the candidate set. Callers (runImportApple) use
+      // the aggregated earliest date to widen their rescore window so
+      // daily_scores for old transactions that newly matched a rule get
+      // refreshed.
+      const minSql = rule.target_subcategory
+        ? `SELECT MIN(date) as d FROM transactions WHERE ${col} LIKE ? AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)`
+        : `SELECT MIN(date) as d FROM transactions WHERE ${col} LIKE ? AND COALESCE(category, '') != ?`;
+      const minRow = rule.target_subcategory
+        ? (db.prepare(minSql).get(rule.match_pattern, rule.target_category, rule.target_subcategory) as { d: string | null })
+        : (db.prepare(minSql).get(rule.match_pattern, rule.target_category) as { d: string | null });
+
       const result = rule.target_subcategory
         ? db.prepare(
             `UPDATE transactions SET category = ?, subcategory = ? WHERE ${col} LIKE ? AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)`
@@ -96,6 +125,9 @@ export function applyRecategorizationRules(db: Database, logger: SyncLogger = co
       if (result.changes > 0) {
         logger.log(`  Recategorized ${result.changes} txn(s): ${rule.label || rule.match_pattern}`);
         transactionsUpdated += Number(result.changes);
+        if (minRow.d !== null && (earliestAffectedDate === null || minRow.d < earliestAffectedDate)) {
+          earliestAffectedDate = minRow.d;
+        }
       }
     }
   };
@@ -115,5 +147,6 @@ export function applyRecategorizationRules(db: Database, logger: SyncLogger = co
     rulesEvaluated: rules.length,
     rulesSkipped,
     transactionsUpdated,
+    earliestAffectedDate,
   };
 }

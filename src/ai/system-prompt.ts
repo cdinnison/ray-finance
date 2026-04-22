@@ -109,9 +109,11 @@ This onboarding block will automatically disappear once the context file is fill
 
   if (memories.length > 0) {
     prompt += `\n\n## Things I remember about ${name}\n`;
-    // Memory content is user-typed (via save_memory) and lands ABOVE the
-    // "Current Financial Briefing" preamble that flags external strings as
-    // untrusted data — the highest-leverage injection surface in this prompt.
+    // Memory content is user-typed (via save_memory) and is currently
+    // appended AFTER the "## Current Financial Briefing" preamble (see the
+    // computeInsights block above), so the briefing does NOT sit as a
+    // trust-boundary marker between these memories and the rest of the
+    // prompt — anything below the briefing can still influence the model.
     // Strip control characters so a crafted memory can't use a newline to
     // break out of its data context; keep the full length (no 80-char clip)
     // because legitimate memories can run long and truncation would be

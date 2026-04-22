@@ -20,6 +20,16 @@ import { refreshPropertyValues, hasListingUrls } from "./property.js";
 export interface SyncResult {
   transactionsAdded: number;
   institutionsSynced: number;
+  // Partial-failure signals: populated when the post-sync derivation tail
+  // (net-worth snapshot + recat + backfill + yesterday's score) or the
+  // achievement check threw. Per-institution transaction pulls commit
+  // independently above, so we don't rethrow from runDailySync — but callers
+  // need a way to distinguish "sync finished cleanly" from "transactions
+  // landed but derived state may be stale" so the spinner/UX can warn
+  // instead of falsely reporting success. See src/cli/commands.ts:runSync
+  // and src/cli/setup.ts for the branch, mirrored on runImportApple.
+  derivationError?: string;
+  achievementError?: string;
 }
 
 export interface SyncLogger {
@@ -240,6 +250,9 @@ export async function runDailySync(
     const dailyScore = calculateDailyScore(db, yesterday);
     logger.log(`  Daily score (${yesterday}): ${dailyScore.score}/100`);
   });
+  let derivationError: string | undefined;
+  let achievementError: string | undefined;
+
   try {
     work();
   } catch (err: any) {
@@ -247,8 +260,11 @@ export async function runDailySync(
     // loop above — those commits ran independently of this derivation tail.
     // Degrade to logger.error so runSync's outer catch doesn't convert a
     // post-sync derivation failure into a "Sync failed" + process.exit(1)
-    // that falsely implies the Plaid pull itself failed.
-    logger.error(`Post-sync derivation failed: ${(err && err.message) || String(err)}`);
+    // that falsely implies the Plaid pull itself failed. Surface the message
+    // via SyncResult.derivationError so callers can warn on a half-synced
+    // state instead of reporting "Sync complete." unconditionally.
+    derivationError = (err && err.message) || String(err);
+    logger.error(`Post-sync derivation failed: ${derivationError}`);
     logger.error(`  (Transactions were still pulled and saved.)`);
   }
 
@@ -264,11 +280,24 @@ export async function runDailySync(
       }
     }
   } catch (err: any) {
-    logger.error(`  Achievement check failed: ${(err && err.message) || String(err)}`);
+    achievementError = (err && err.message) || String(err);
+    logger.error(`  Achievement check failed: ${achievementError}`);
   }
 
-  logger.log("Sync complete.");
-  return { transactionsAdded: totalAdded, institutionsSynced: instSynced };
+  // Explicit success/partial-failure signal in the logs so the success path
+  // is distinguishable from "never ran" — callers branch on the returned
+  // derivationError/achievementError for UX (spinner.warn vs spinner.succeed).
+  if (derivationError || achievementError) {
+    logger.log("Sync complete (with post-sync warnings).");
+  } else {
+    logger.log("Sync complete.");
+  }
+  return {
+    transactionsAdded: totalAdded,
+    institutionsSynced: instSynced,
+    derivationError,
+    achievementError,
+  };
 }
 
 /** Run daily sync (cron / CLI entry point) */

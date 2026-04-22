@@ -147,7 +147,22 @@ export async function runSync(): Promise<void> {
   const elapsed = formatDuration(Date.now() - startTime);
   const parts = [elapsed];
   if (result.transactionsAdded > 0) parts.push(`${result.transactionsAdded} new transactions`);
-  spinner.succeed(`Sync complete. ${chalk.dim(`(${parts.join(", ")})`)}`);
+  // Post-sync partial-failure signal: per-institution Plaid pulls committed
+  // independently above, but the derivation tail (net-worth snapshot + recat
+  // + backfill + yesterday's score) or the achievement check may have
+  // thrown. Mirror runImportApple's pattern (spinner.warn on post-import
+  // failure) so the user sees derived state may be stale instead of a
+  // falsely-clean "Sync complete."
+  const postWarns: string[] = [];
+  if (result.derivationError) postWarns.push(`derivation failed: ${result.derivationError}`);
+  if (result.achievementError) postWarns.push(`achievement check failed: ${result.achievementError}`);
+  if (postWarns.length > 0) {
+    spinner.warn(
+      `Sync complete, but post-sync steps failed: ${postWarns.join("; ")} ${chalk.dim(`(${parts.join(", ")})`)}`,
+    );
+  } else {
+    spinner.succeed(`Sync complete. ${chalk.dim(`(${parts.join(", ")})`)}`);
+  }
 }
 
 export async function runLink(): Promise<void> {
@@ -205,14 +220,16 @@ export async function runLink(): Promise<void> {
 
 export async function showAccounts(): Promise<void> {
   const db = getDb();
-  // Discriminate the Apple Card (manual-apple) institution in SQL via its
-  // item_id rather than by access_token. access_token = 'manual' over-matches:
-  // the manual-assets institution (home/car/etc. added via `ray add`) uses the
-  // same sentinel, so labeling on access_token would wrongly tag the Manual
-  // Accounts header as '(manual)'. item_id is the structural discriminator.
+  // Discriminate manual institutions (Apple Card today, any future CSV-import
+  // source tomorrow) via the unified `access_token = 'manual' AND item_id !=
+  // 'manual-assets'` rule so showAccounts and runRemove stay in sync. The
+  // manual-assets institution (home/car/etc. added via `ray add`) also uses
+  // access_token='manual' but surfaces under its own 'Manual Accounts' header
+  // below, so we exclude it from the `(manual)` suffix to avoid a redundant
+  // tag on that header.
   const institutions = db.prepare(
     `SELECT i.name as institution, i.item_id, i.created_at, i.logo, i.primary_color,
-            CASE WHEN i.item_id = 'manual-apple' THEN 1 ELSE 0 END AS is_manual,
+            CASE WHEN i.access_token = 'manual' AND i.item_id != 'manual-assets' THEN 1 ELSE 0 END AS is_manual,
             a.name, a.type, a.subtype, a.mask, a.current_balance, a.currency
      FROM institutions i
      LEFT JOIN accounts a ON a.item_id = i.item_id AND a.hidden = 0
@@ -357,17 +374,31 @@ export async function showSpending(period = "this_month"): Promise<void> {
     return;
   }
 
-  const rows = db.prepare(
+  const rawRows = db.prepare(
     `SELECT category, SUM(amount) as total, COUNT(*) as count FROM transactions
      WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
      AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))
      GROUP BY category ORDER BY total DESC`
-  ).all(start, end) as { category: string; total: number; count: number }[];
+  ).all(start, end) as { category: string | null; total: number; count: number }[];
 
-  if (rows.length === 0) {
+  if (rawRows.length === 0) {
     console.log("\nNo spending found for that period.");
     return;
   }
+
+  // Merge NULL and literal 'OTHER' into a single "Other" bucket so a month
+  // with both Apple-unmapped (NULL) and Plaid PFC fallback ('OTHER') rows
+  // doesn't surface two duplicate "Other" lines. Sum totals AND counts
+  // across the merged bucket so the "N txns" trailer reflects every row.
+  const rowMap = new Map<string | null, { total: number; count: number }>();
+  for (const r of rawRows) {
+    const key = r.category == null || r.category === "OTHER" ? null : r.category;
+    const prev = rowMap.get(key) ?? { total: 0, count: 0 };
+    rowMap.set(key, { total: prev.total + r.total, count: prev.count + r.count });
+  }
+  const rows = [...rowMap.entries()]
+    .map(([category, agg]) => ({ category, ...agg }))
+    .sort((a, b) => b.total - a.total);
 
   const grandTotal = rows.reduce((s, r) => s + r.total, 0);
   console.log(`\n${heading("Spending")} ${dim(`${start} to ${end}`)}`);
@@ -551,9 +582,14 @@ export async function runRemove(): Promise<void> {
   // Least-exposure: derive `is_manual` in SQL instead of hydrating the
   // encrypted Plaid access token into JS memory — runRemove only needs the
   // manual/linked boolean for the listing label.
+  // Discriminator: `access_token = 'manual' AND item_id != 'manual-assets'`
+  // matches the unified rule used in showAccounts so the two commands label
+  // the same institution consistently. The outer WHERE already filters out
+  // manual-assets, so the AND clause here is defensive-redundant but keeps
+  // the rule self-documenting.
   const institutions = db.prepare(
     `SELECT item_id, name,
-            CASE WHEN access_token = 'manual' THEN 1 ELSE 0 END AS is_manual
+            CASE WHEN access_token = 'manual' AND item_id != 'manual-assets' THEN 1 ELSE 0 END AS is_manual
      FROM institutions WHERE item_id != 'manual-assets' ORDER BY created_at`
   ).all() as { item_id: string; name: string; is_manual: number }[];
   for (const inst of institutions) {
@@ -654,6 +690,13 @@ export async function runRemove(): Promise<void> {
  * longer exist. Rescore from ~90 days ago through yesterday (matching the
  * runDailySync / getImportAppleBackfillWindow convention of never writing
  * a partial today row) and take a fresh net-worth snapshot.
+ *
+ * Rescore semantics: calculateDailyScore's hasPriorActivity guard requires
+ * transaction activity within the scored day's local window (±30 days), so
+ * the rescore loop only re-creates daily_scores rows for dates that have
+ * legitimate nearby activity in the surviving transaction set. Quiet gaps
+ * (e.g., post-remove with only old Apple CSV data and nothing recent) are
+ * left empty rather than padded with synthetic zero_spend rows.
  * `removedAccountIds` is reserved for future per-account rescoping — today
  * calculateDailyScore reads the full transactions table, so we simply
  * re-score the window.
@@ -672,15 +715,18 @@ export function cleanupDerivedAfterRemove(db: ReturnType<typeof getDb>, _removed
   const work = db.transaction(() => {
     // Purge stale daily_scores rows in the 90-day window BEFORE rescoring.
     // calculateDailyScore's hasPriorActivity guard returns without writing
-    // for dates that predate any transaction — so if removing the only
-    // transaction source (e.g. the user's sole Plaid institution) empties
-    // the transactions table, every rescore loop iteration is a no-op and
-    // the pre-existing stale daily_scores rows (referencing the now-deleted
-    // account's spending) survive unchanged. Deleting first makes cleanup
+    // for dates that have no transaction activity in the ±30-day local
+    // window — so if removing the only transaction source (e.g. the user's
+    // sole Plaid institution) empties the transactions table, or if the
+    // only surviving transactions are older than 30 days, every rescore
+    // loop iteration in that dead zone is a no-op and the pre-existing
+    // stale daily_scores rows (referencing the now-deleted account's
+    // spending) survive unchanged. Deleting first makes cleanup
     // self-contained: calculateDailyScore then re-creates only days with
-    // legitimate remaining activity, and achievement checks that scan
-    // MAX(*_streak) / COUNT(zero_spend=1) over daily_scores won't see
-    // phantom rows from the removed account's historical data.
+    // transaction activity within the scored day's local window, and
+    // achievement checks that scan MAX(*_streak) / COUNT(zero_spend=1) over
+    // daily_scores won't see phantom rows from the removed account's
+    // historical data.
     db.prepare(`DELETE FROM daily_scores WHERE date BETWEEN ? AND ?`).run(startStr, endStr);
     while (d <= endStr) {
       calculateDailyScore(db, d);
@@ -825,12 +871,31 @@ export function showRecap(period = "last_month"): void {
   }
 
   // ── Top categories ──
-  const topCats = db.prepare(
+  // Pull the full set (no SQL LIMIT) so the JS-side bucket merge below can't
+  // drop half of a NULL+'OTHER' merge by having one bucket fall outside the
+  // top 5 before merging. categoryLabel(null) and categoryLabel('OTHER')
+  // both render as "Other" — merging both into a single logical bucket keyed
+  // on the RENDERED label prevents duplicate "Other" lines when a month has
+  // both Apple-unmapped (NULL) and Plaid PFC fallback ('OTHER') rows. Keeps
+  // any non-Other category as its own bucket by keying on raw category.
+  const topCatRows = db.prepare(
     `SELECT category, SUM(amount) as total FROM transactions
      WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
      AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))
-     GROUP BY category ORDER BY total DESC LIMIT 5`
-  ).all(start, end) as { category: string; total: number }[];
+     GROUP BY category ORDER BY total DESC`
+  ).all(start, end) as { category: string | null; total: number }[];
+
+  const topCatMap = new Map<string | null, number>();
+  for (const r of topCatRows) {
+    // Normalize the two "Other" producers (NULL and literal 'OTHER') onto
+    // a single key; keep everything else keyed on its raw category string.
+    const key = r.category == null || r.category === "OTHER" ? null : r.category;
+    topCatMap.set(key, (topCatMap.get(key) ?? 0) + r.total);
+  }
+  const topCats = [...topCatMap.entries()]
+    .map(([category, total]) => ({ category, total }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 5);
 
   if (topCats.length > 0) {
     console.log(`\n  ${heading("Top Categories")}`);
@@ -947,11 +1012,11 @@ export async function runImportApple(
   // should not be told 1 row was skipped just because "Groceries" is an
   // unmapped category name.
   if (parsePreview.skippedCount > 0) {
-    console.log(chalk.yellow(`  ${parsePreview.skippedCount} rows skipped (see warnings below)`));
+    console.log(chalk.yellow(`  ${parsePreview.skippedCount} rows skipped`));
   }
   const otherWarnings = parsePreview.warnings.length - parsePreview.skippedCount;
   if (otherWarnings > 0) {
-    console.log(chalk.yellow(`  ${otherWarnings} warning${otherWarnings === 1 ? "" : "s"} (see warnings below)`));
+    console.log(chalk.yellow(`  ${otherWarnings} warning${otherWarnings === 1 ? "" : "s"}`));
   }
   console.log("");
 
@@ -1123,7 +1188,7 @@ export async function runImportApple(
   const spinner = ora(opts.dryRun ? "Previewing import..." : "Importing...").start();
   let result;
   const recatBuf: string[] = [];
-  let recat: { rulesEvaluated: number; rulesSkipped: number; transactionsUpdated: number } | null = null;
+  let recat: { rulesEvaluated: number; rulesSkipped: number; transactionsUpdated: number; earliestAffectedDate: string | null } | null = null;
   let daysScored = 0;
   let scoredRange: { start: string; end: string } | null = null;
   let netWorthSnapshot: number | null = null;
@@ -1165,7 +1230,7 @@ export async function runImportApple(
     // `let`s are treated as "may not happen" and leave the union narrowed
     // to `null`, breaking the `scoredRange.start` deref below).
     type WorkOut = {
-      recat: { rulesEvaluated: number; rulesSkipped: number; transactionsUpdated: number } | null;
+      recat: { rulesEvaluated: number; rulesSkipped: number; transactionsUpdated: number; earliestAffectedDate: string | null } | null;
       daysScored: number;
       scoredRange: { start: string; end: string } | null;
       netWorthSnapshot: number | null;
@@ -1188,7 +1253,22 @@ export async function runImportApple(
         const { netWorth: nw } = snapshotNetWorth(db);
         localNetWorthSnapshot = nw;
 
-        const backfillWindow = getImportAppleBackfillWindow(result, opts);
+        const baseWindow = getImportAppleBackfillWindow(result, opts);
+        // If the recat pass newly updated transactions dated BEFORE the
+        // CSV range (a rule that happened to also match older transactions
+        // elsewhere in the DB), widen the start of the backfill window to
+        // cover them. Otherwise their old daily_scores rows survive stale
+        // with the pre-recat category breakdown. Clamping against
+        // MIN(transactions.date) happens below, so the widening is safe
+        // even if earliestAffectedDate predates any recorded activity.
+        const backfillWindow = baseWindow && localRecat.earliestAffectedDate !== null
+          ? {
+              start: localRecat.earliestAffectedDate < baseWindow.start
+                ? localRecat.earliestAffectedDate
+                : baseWindow.start,
+              end: baseWindow.end,
+            }
+          : baseWindow;
 
         // Backfill daily scores across the imported date range so streaks
         // accumulate properly (each day reads the prior day's daily_scores row)
@@ -1338,6 +1418,21 @@ export async function runImportApple(
       console.log(`  ${skipLabel} ${chalk.yellow(String(result.rowsSkipped) + " (unexpected insert conflict)")}`);
     } else {
       console.log(`  ${skipLabel} ${dim(String(result.rowsSkipped) + " (already in DB)")}`);
+    }
+  }
+
+  // Under --replace-range, surface the preserved/dropped-user-edits counts so
+  // a user who manually labelled transactions before re-importing can see
+  // whether their edits survived. preservedCount/droppedCount are null
+  // outside --replace-range (dry-run also returns null, so this block stays
+  // silent there). Preserved line only prints when >0 (no line when nothing
+  // to report); dropped line only prints when >0 in red to flag data loss.
+  if (opts.replaceRange && result.preservedCount !== null) {
+    if (result.preservedCount > 0) {
+      console.log(dim(`  Edits preserved: ${result.preservedCount}`));
+    }
+    if (result.droppedCount !== null && result.droppedCount > 0) {
+      console.log(chalk.red(`  Edits LOST:      ${result.droppedCount}`));
     }
   }
 

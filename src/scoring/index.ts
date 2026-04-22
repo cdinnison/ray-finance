@@ -32,22 +32,28 @@ export function calculateDailyScore(db: Database, dateStr?: string): DailyScore 
 
   const nextDate = new Date(new Date(date).getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-  // Skip scoring for calendar days that predate any recorded transaction.
-  // Without this guard, backfill callers (cleanupDerivedAfterRemove,
-  // runImportApple, runDailySync) synthesize daily_scores rows for every
-  // calendar day in a window — including days the user never touched their
-  // money. Those fabricated rows score with restaurants.cnt=0,
-  // shopping.cnt=0, allOnPace=true, isZeroSpend=true, which inflates
-  // no_restaurant_streak / no_shopping_streak / on_pace_streak and fakes
-  // zero_spend days, directly driving false achievement unlocks via
-  // checkAchievements (MAX(*_streak), COUNT(zero_spend=1)).
+  // Skip scoring for calendar days with no transaction activity in a local
+  // ±30-day window around the scored date. Without a local-window guard, the
+  // backfill callers (cleanupDerivedAfterRemove, runImportApple,
+  // runDailySync) synthesize daily_scores rows for every calendar day in a
+  // window — including days the user never touched their money. Those
+  // fabricated rows score with restaurants.cnt=0, shopping.cnt=0,
+  // allOnPace=true, isZeroSpend=true, which inflates no_restaurant_streak /
+  // no_shopping_streak / on_pace_streak and fakes zero_spend days, directly
+  // driving false achievement unlocks via checkAchievements
+  // (MAX(*_streak), COUNT(zero_spend=1)).
   //
-  // A day counts as "real" if at least one transaction exists on-or-before
-  // that date. Days with transactions that are legitimately zero-spend
-  // (e.g. an income row) still score because the probe finds them.
+  // A day counts as "real" if at least one transaction exists within
+  // ±30 days of the scored date. This covers the typical monthly budget
+  // cycle — a legitimate quiet month is rare, and if the user truly went
+  // 30+ days with zero observable activity, the system must not synthesize
+  // achievements from that silence. Days with transactions that are
+  // legitimately zero-spend (e.g. an income row) still score because the
+  // probe finds the nearby transaction. The trailing +1 day mirrors the
+  // pending-row lookahead used later in the scoring logic.
   const hasPriorActivity = db.prepare(
-    `SELECT 1 FROM transactions WHERE date <= ? LIMIT 1`
-  ).get(date);
+    `SELECT 1 FROM transactions WHERE date BETWEEN date(?, '-30 days') AND date(?, '+1 day') LIMIT 1`
+  ).get(date, date);
 
   if (!hasPriorActivity) {
     return {
@@ -288,16 +294,21 @@ export function checkAchievements(db: Database): Achievement[] {
       check: () => {
         // Whole-table scan grouped by calendar month so Apple backfills of
         // older months can unlock this. Uses daily_scores.date; rows are only
-        // inserted for days with prior transaction activity (see
-        // calculateDailyScore's hasPriorActivity guard), so partial months
-        // don't get padded with synthetic zero-spend rows.
+        // inserted for days with transaction activity inside the scored day's
+        // local window (see calculateDailyScore's hasPriorActivity guard).
+        // Month-completeness guard: only count months whose end date is
+        // strictly before today, so an in-progress month with a few zero-spend
+        // days so far can't unlock the badge. Mirrors food_discipline's
+        // canonical HAVING shape below.
+        const today = new Date().toISOString().slice(0, 10);
         const row = db.prepare(
           `SELECT MAX(cnt) as peak FROM (
-             SELECT COUNT(*) as cnt FROM daily_scores
+             SELECT strftime('%Y-%m', date) as ym, COUNT(*) as cnt FROM daily_scores
              WHERE zero_spend = 1
-             GROUP BY strftime('%Y-%m', date)
+             GROUP BY ym
+             HAVING date(ym || '-01', '+1 month', '-1 day') < ?
            )`
-        ).get() as any;
+        ).get(today) as any;
         return row?.peak >= 5;
       },
     },
@@ -307,16 +318,22 @@ export function checkAchievements(db: Database): Achievement[] {
       description: "$1,000+ paid toward credit card in a single month",
       check: () => {
         // Whole-table scan grouped by calendar month so Apple backfills of
-        // older months can unlock this.
+        // older months can unlock this. Month-completeness guard: only count
+        // months whose end date is strictly before today, matching
+        // food_discipline's canonical HAVING shape. Without the guard, any
+        // $1k+ payment in the first days of the in-progress month would
+        // prematurely unlock the badge.
+        const today = new Date().toISOString().slice(0, 10);
         const row = db.prepare(
           `SELECT MAX(total) as peak FROM (
-             SELECT SUM(ABS(amount)) as total FROM transactions
+             SELECT strftime('%Y-%m', date) as ym, SUM(ABS(amount)) as total FROM transactions
              WHERE account_id IN (SELECT account_id FROM accounts WHERE type = 'credit')
              AND amount < 0
              AND (category IS NULL OR category != 'TRANSFER_IN')
-             GROUP BY strftime('%Y-%m', date)
+             GROUP BY ym
+             HAVING date(ym || '-01', '+1 month', '-1 day') < ?
            )`
-        ).get() as any;
+        ).get(today) as any;
         return row?.peak >= 1000;
       },
     },
@@ -423,16 +440,23 @@ export function checkAchievements(db: Database): Achievement[] {
       description: "Average score of 80+ over a full month",
       check: () => {
         // Whole-table scan grouped by calendar month so Apple backfills of
-        // older months can unlock this. HAVING cnt >= 20 acts as the
-        // month-completeness guard (a month with <20 scored days is either
-        // partial data or the in-progress current month before day 20).
+        // older months can unlock this. Two-part completeness guard:
+        //   • `cnt >= 20` is a data-density check so a sparsely-backfilled
+        //     historical month (e.g., a 5-day stretch that all scored 90+)
+        //     doesn't qualify on a tiny sample.
+        //   • `date(ym || '-01', '+1 month', '-1 day') < ?` is the canonical
+        //     month-end guard mirrored from food_discipline, so the current
+        //     in-progress month can't unlock on day 20 before it has run
+        //     its full course. Both clauses must hold.
+        const today = new Date().toISOString().slice(0, 10);
         const row = db.prepare(
           `SELECT MAX(avg_score) as peak FROM (
-             SELECT AVG(score) as avg_score, COUNT(*) as cnt FROM daily_scores
-             GROUP BY strftime('%Y-%m', date)
+             SELECT strftime('%Y-%m', date) as ym, AVG(score) as avg_score, COUNT(*) as cnt FROM daily_scores
+             GROUP BY ym
              HAVING cnt >= 20
+               AND date(ym || '-01', '+1 month', '-1 day') < ?
            )`
-        ).get() as any;
+        ).get(today) as any;
         return row?.peak >= 80;
       },
     },

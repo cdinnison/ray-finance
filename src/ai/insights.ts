@@ -16,6 +16,13 @@ const MAX_CHARS = 6000;
  * so a crafted merchant name cannot inject instructions that smuggle tool
  * calls or rewrite the surrounding prompt. This is a defensive layer — the
  * primary guard is the explicit "data marker" preamble in the prompt itself.
+ *
+ * NOT delimiter-safe: this helper intentionally leaves `|`, `\t`, `,`, and
+ * other in-band separators intact. If the output format uses one of those
+ * as a field separator (e.g. the `|`-delimited rows in get_transactions and
+ * search_transactions), use `sanitizeForPromptCell` instead to strip the
+ * separator character so a user-controllable value can't spoof extra
+ * columns.
  */
 export function sanitizeForPrompt(s: string | null | undefined): string {
   if (s == null) return "";
@@ -23,6 +30,23 @@ export function sanitizeForPrompt(s: string | null | undefined): string {
   // single space, then collapse runs of whitespace. Truncate to 80 chars.
   const stripped = String(s).replace(/[\x00-\x1f\x7f]+/g, " ").replace(/\s+/g, " ").trim();
   return stripped.length > 80 ? stripped.slice(0, 80) + "…" : stripped;
+}
+
+/**
+ * Variant of `sanitizeForPrompt` that additionally replaces `|` (pipe) with
+ * `/` so a user-controllable field can't smuggle a column separator into the
+ * pipe-delimited row formats used by several tool outputs (get_transactions,
+ * search_transactions, get_portfolio holdings). Without this, a merchant
+ * name like "Foo | Bar Groceries" would spoof fake account_name / amount /
+ * category columns when the model parses the row. All other guarantees from
+ * sanitizeForPrompt (control-char strip, whitespace collapse, 80-char cap)
+ * still apply.
+ */
+export function sanitizeForPromptCell(s: string | null | undefined): string {
+  // Replace pipes BEFORE the length cap so a multi-pipe name can't slip a
+  // pipe past the truncation boundary.
+  const noPipes = s == null ? "" : String(s).replace(/\|/g, "/");
+  return sanitizeForPrompt(noPipes);
 }
 
 /**
@@ -128,15 +152,37 @@ function buildSnapshot(db: Database.Database): string {
     // rank them as 0% when advising on payoff order. Apple CSV imports land
     // here by default (Apple doesn't export APR); manual `ray add …
     // liability` entries also lack a stored rate.
+    //
+    // Partition by whether the debt looks like a retail card (type='credit'
+    // and small balance) vs. a loan (mortgage / student / car / large
+    // credit balance). A ~20% retail-card assumption is defensible only for
+    // the card-like partition — telling the model to assume a $350k
+    // mortgage accrues at 20% is financially nonsensical and contradicts
+    // calculate_debt_payoff's simulation skip guard
+    // (tools.ts: rate==null && (minPayment<=0 || type!=='credit' ||
+    // balance>50000)). Keep the thresholds in lockstep with that guard so
+    // the three narrative surfaces (insights briefing, get_debts tool
+    // description, calculate_debt_payoff skip branch) give the model one
+    // consistent policy.
     const unknownRateDebts = debts.debts.filter(d => d.rate == null);
     if (unknownRateDebts.length > 0) {
+      const cardLike = unknownRateDebts.filter(d => d.type === "credit" && d.balance <= 50000);
+      const loanLike = unknownRateDebts.filter(d => !(d.type === "credit" && d.balance <= 50000));
       // Debt names come from accounts.name (user-controllable via
       // `ray add`, institution-supplied via Plaid). Sanitize before
       // interpolating so a crafted name can't inject instructions.
-      const names = unknownRateDebts.map(d => sanitizeForPrompt(d.name)).join(", ");
-      lines.push(
-        `Note: ${unknownRateDebts.length} debt(s) have unknown APR (${names}) — assume retail-card rate (~20%) when prioritizing payoff, or ask the user to confirm.`
-      );
+      if (cardLike.length > 0) {
+        const names = cardLike.map(d => sanitizeForPrompt(d.name)).join(", ");
+        lines.push(
+          `Note: ${cardLike.length} card-shaped debt(s) have unknown APR (${names}) — assume retail-card rate (~20%) when prioritizing payoff, or ask the user to confirm.`
+        );
+      }
+      if (loanLike.length > 0) {
+        const names = loanLike.map(d => sanitizeForPrompt(d.name)).join(", ");
+        lines.push(
+          `Note: ${loanLike.length} loan-shaped debt(s) have unknown APR (${names}) — do NOT assume a retail-card rate; ask the user for the APR before prioritizing payoff (mortgages, student/car loans, and large balances behave very differently from credit cards).`
+        );
+      }
     }
   }
 

@@ -516,7 +516,7 @@ describe("runAppleImport", () => {
     runAppleImport(db, { csvPath: path, balance: 0 });
     const recat = applyRecategorizationRules(db);
 
-    expect(recat).toEqual({ rulesEvaluated: 1, rulesSkipped: 0, transactionsUpdated: 1 });
+    expect(recat).toMatchObject({ rulesEvaluated: 1, rulesSkipped: 0, transactionsUpdated: 1 });
     const poke: any = db.prepare(
       `SELECT category, subcategory FROM transactions WHERE merchant_name = 'Poke Tiki Costa Mesa'`
     ).get();
@@ -541,7 +541,7 @@ describe("runAppleImport", () => {
     runAppleImport(db, { csvPath: path, balance: 0 });
     const recat = applyRecategorizationRules(db);
 
-    expect(recat).toEqual({ rulesEvaluated: 1, rulesSkipped: 0, transactionsUpdated: 1 });
+    expect(recat).toMatchObject({ rulesEvaluated: 1, rulesSkipped: 0, transactionsUpdated: 1 });
     const poke: any = db.prepare(
       `SELECT category, subcategory FROM transactions WHERE merchant_name = 'Poke Tiki Costa Mesa'`
     ).get();
@@ -557,7 +557,9 @@ describe("runAppleImport", () => {
     const db = freshDb();
     runAppleImport(db, { csvPath: path, balance: 0 });
     const recat = applyRecategorizationRules(db);
-    expect(recat).toEqual({ rulesEvaluated: 0, rulesSkipped: 0, transactionsUpdated: 0 });
+    expect(recat).toMatchObject({ rulesEvaluated: 0, rulesSkipped: 0, transactionsUpdated: 0 });
+    // Empty-rule no-op leaves earliestAffectedDate null (no UPDATE fired).
+    expect(recat.earliestAffectedDate).toBeNull();
   });
 
   it("backfilling scores across the import range accumulates streaks", () => {
@@ -720,7 +722,7 @@ describe("runAppleImport", () => {
     ).run("merchant_name", "%MysteryMerchant%", "GENERAL_MERCHANDISE", null, "Mystery -> general");
 
     const recat = applyRecategorizationRules(db);
-    expect(recat).toEqual({ rulesEvaluated: 1, rulesSkipped: 0, transactionsUpdated: 1 });
+    expect(recat).toMatchObject({ rulesEvaluated: 1, rulesSkipped: 0, transactionsUpdated: 1 });
 
     const row: any = db.prepare(
       `SELECT category, subcategory FROM transactions WHERE merchant_name = 'MysteryMerchant'`
@@ -1477,5 +1479,71 @@ describe("CATEGORY_MAP coverage", () => {
     expect(matchingWarnings).toHaveLength(1);
 
     try { unlinkSync(csvPath); } catch {}
+  });
+});
+
+describe("calculateDailyScore local-window hasPriorActivity guard (F002 regression)", () => {
+  // Regression: the guard previously accepted `date <= current` which returned
+  // true for ANY date on-or-after MIN(transactions.date). A user with old
+  // Apple-only data and no recent activity could therefore synthesize
+  // fabricated zero_spend rows for every day in a quiet gap, inflating
+  // streak-based achievement unlocks. The tightened ±30-day guard no-ops
+  // the scoring write for dates with no nearby transaction activity.
+
+  it("returns a zero-shape score WITHOUT persisting for a date 45+ days after the only transaction", () => {
+    const db = freshDb();
+    db.prepare(
+      `INSERT INTO institutions (item_id, access_token, name, products)
+       VALUES ('i1', 'manual', 'T', '[]')`
+    ).run();
+    db.prepare(
+      `INSERT INTO accounts (account_id, item_id, name, type, current_balance)
+       VALUES ('a1', 'i1', 'Card', 'credit', 0)`
+    ).run();
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, pending, iso_currency_code)
+       VALUES ('t1', 'a1', 10, '2025-01-01', 'Coffee', 0, 'USD')`
+    ).run();
+
+    // Score a date 45 days after the only transaction — outside the ±30-day
+    // window, so the probe must return false and skip persistence.
+    const score = calculateDailyScore(db, "2025-02-15");
+    expect(score.total_spend).toBe(0);
+    expect(score.zero_spend).toBe(false);
+    expect(score.no_restaurant_streak).toBe(0);
+
+    const rows = db.prepare(
+      `SELECT COUNT(*) as c FROM daily_scores WHERE date = ?`
+    ).get("2025-02-15") as { c: number };
+    expect(rows.c).toBe(0);
+  });
+
+  it("still scores a date with transactions within ±30 days (legitimate local activity)", () => {
+    const db = freshDb();
+    db.prepare(
+      `INSERT INTO institutions (item_id, access_token, name, products)
+       VALUES ('i1', 'manual', 'T', '[]')`
+    ).run();
+    db.prepare(
+      `INSERT INTO accounts (account_id, item_id, name, type, current_balance)
+       VALUES ('a1', 'i1', 'Card', 'credit', 0)`
+    ).run();
+    // Two transactions: one exactly on the scored day, one 10 days before.
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, pending, iso_currency_code)
+       VALUES ('t1', 'a1', 10, '2025-03-05', 'Coffee', 0, 'USD')`
+    ).run();
+    db.prepare(
+      `INSERT INTO transactions (transaction_id, account_id, amount, date, name, pending, iso_currency_code)
+       VALUES ('t2', 'a1', 20, '2025-03-10', 'Lunch', 0, 'USD')`
+    ).run();
+
+    // Date falls within ±30 days of both transactions → probe succeeds and
+    // the score is persisted.
+    calculateDailyScore(db, "2025-03-15");
+    const rows = db.prepare(
+      `SELECT COUNT(*) as c FROM daily_scores WHERE date = ?`
+    ).get("2025-03-15") as { c: number };
+    expect(rows.c).toBe(1);
   });
 });
