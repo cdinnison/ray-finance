@@ -1285,15 +1285,16 @@ export async function runImportApple(
         // only from the first successfully imported row, or stale daily_scores
         // can survive for boundary dates that were deleted due to malformed rows.
         if (backfillWindow) {
-          // calculateDailyScore no-ops on pre-first-transaction dates (its
-          // hasPriorActivity guard returns a zero DailyScore WITHOUT
-          // inserting into daily_scores). Clamp the loop's start to the
-          // actual MIN(transactions.date) so localDaysScored and the
-          // "Scored N day(s), start -> end" summary line reflect only
-          // days we actually persisted a row for. Starting earlier would
-          // inflate both count AND range; a CSV beginning long before any
-          // Plaid history would otherwise show "Scored 90 days" when the
-          // DB only gained a handful of rows.
+          // Clamp the loop's start to MIN(transactions.date) so the
+          // widening can't synthesize daily_scores for dates before any
+          // recorded activity. calculateDailyScore's hasPriorActivity
+          // guard (scoring/index.ts, ±30-day window) no-ops on far-
+          // before-firstTxn dates, but its +1-day lookahead still inserts
+          // a zero-context row for the day immediately before firstTxn.
+          // Without the clamp, localDaysScored and the "Scored N day(s),
+          // start -> end" summary would inflate; a CSV beginning long
+          // before any Plaid history would otherwise show "Scored 90
+          // days" when the DB only gained a handful of rows.
           const firstTxn = db.prepare(`SELECT MIN(date) as d FROM transactions`).get() as { d: string | null };
           if (firstTxn.d != null) {
             const { start: origStart, end } = backfillWindow;

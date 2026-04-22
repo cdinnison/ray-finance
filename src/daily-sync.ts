@@ -251,10 +251,13 @@ export async function runDailySync(
     // with the pre-recat category breakdown. Mirrors the widening runImportApple
     // applies at cli/commands.ts — F034 "fix the class, not the instance".
     //
-    // Lower bound is clamped against MIN(transactions.date): calculateDailyScore
-    // returns a zero row WITHOUT inserting into daily_scores on pre-first-txn
-    // dates (its hasPriorActivity guard), so calling it for such dates is a
-    // cheap no-op, but the clamp keeps the "recat-widened" log output honest.
+    // Lower bound is clamped against MIN(transactions.date) so the widening
+    // can't synthesize daily_scores for dates before any recorded activity.
+    // calculateDailyScore's hasPriorActivity guard (scoring/index.ts, ±30-day
+    // window) no-ops on far-before-firstTxn dates, but its +1-day lookahead
+    // still inserts a zero-context row for the day immediately before
+    // firstTxn — the clamp prevents that and keeps the "recat-widened" log
+    // output honest.
     const widenedDates: string[] = [];
     if (recat.earliestAffectedDate !== null) {
       // The rescore range the code below already covers starts at the day
