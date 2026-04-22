@@ -736,41 +736,76 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
     }
 
     // Re-apply snapshotted user fields onto the freshly-inserted rows.
-    // Strategy:
-    //   1. Try exact transaction_id match (fast path; covers unchanged
-    //      descriptions).
-    //   2. If no row matched, fall back to (account_id, date, amount,
-    //      merchant_name) — Apple's description refinements change the
-    //      hashed id but leave those shape fields identical. Apply the
-    //      restore only when exactly one candidate matches; 0 matches
-    //      means the semantic row is gone from the re-import (user's
-    //      edit is dropped), >1 matches means indistinguishable
-    //      same-day/same-merchant/same-amount events where we can't
-    //      know which one the note/label belongs to.
-    //   3. Each dropped or ambiguous row produces a warning entry so the
-    //      user can re-apply manually.
+    // Two-pass strategy (order-independent) with a `claimed` Set tracking
+    // transaction_ids already bound to a preserved row:
+    //   Pass 1: Exact transaction_id match for every preserved row (fast
+    //           path; covers unchanged descriptions). Every success is
+    //           added to `claimed` so Pass 2 can't pick the same row.
+    //   Pass 2: For preserved rows that missed exact-match, fall back to
+    //           (account_id, date, amount, merchant_name) — Apple's
+    //           description refinements change the hashed id but leave
+    //           those shape fields identical. Filter candidates through
+    //           `claimed` before counting, then apply the restore only
+    //           when exactly one UNCLAIMED candidate matches; on success
+    //           add that id to `claimed` too. 0 unclaimed matches means
+    //           the semantic row is gone from the re-import (user's
+    //           edit is dropped), >1 unclaimed means indistinguishable
+    //           same-day/same-merchant/same-amount events where we can't
+    //           know which one the note/label belongs to.
+    //   Each dropped or ambiguous row produces a warning entry so the
+    //   user can re-apply manually.
+    // Why two passes (not one loop): a single-loop design is
+    // SELECT-row-order dependent. If two preserved rows share
+    // (date, amount, merchant) and only one exact-id-matches in the
+    // re-import, the preserved row whose id still exists MUST bind first
+    // so Pass 2's fallback sees exactly one unclaimed candidate for the
+    // other. Separating the phases guarantees this regardless of the
+    // order preserved was SELECTed.
+    // Why track `claimed` (not just re-query): without it, a row an
+    // exact-match already consumed still appears in the fallback's
+    // candidates list, inflating length from 1→2 and triggering a
+    // spurious "ambiguous" drop. It also prevents the COALESCE(?, col)
+    // UPDATE from silently overwriting an earlier restore on the same
+    // target row when two preserved snapshots collide on shape.
     // `restoreUserFields` uses snapshot-wins COALESCE for every column —
     // a user edit on any of note/label/category/subcategory made before
     // --replace-range survives the re-import, and rows the user never
     // touched keep whatever the fresh INSERT wrote.
     if (opts.replaceRange && preserved.length > 0) {
+      const claimed = new Set<string>();
+      const needsFallback: PreservedRow[] = [];
+
+      // Pass 1: exact transaction_id match for every preserved row.
       for (const p of preserved) {
-        const exact = restoreUserFields.run(p.note, p.label, p.category, p.subcategory, p.transaction_id);
+        const exact = restoreUserFields.run(
+          p.note,
+          p.label,
+          p.category,
+          p.subcategory,
+          p.transaction_id
+        );
         if (Number(exact.changes) === 1) {
+          claimed.add(p.transaction_id);
           preservedCount++;
           continue;
         }
-        // Fallback: match by shape. merchant_name can be NULL, so the
-        // prepared statement uses a double-binding trick: both `?` positions
-        // receive the same value (for the IS NULL branch and the equality
-        // branch respectively).
-        const candidates = findCandidates.all(
+        needsFallback.push(p);
+      }
+
+      // Pass 2: shape-based fallback for rows that missed Pass 1.
+      // merchant_name can be NULL, so the prepared statement uses a
+      // double-binding trick: both `?` positions receive the same value
+      // (for the IS NULL branch and the equality branch respectively).
+      for (const p of needsFallback) {
+        const candidates = (findCandidates.all(
           ACCOUNT_ID,
           p.date,
           p.amount,
           p.merchant_name,
           p.merchant_name
-        ) as { transaction_id: string }[];
+        ) as { transaction_id: string }[]).filter(
+          c => !claimed.has(c.transaction_id)
+        );
         if (candidates.length === 1) {
           restoreUserFields.run(
             p.note,
@@ -779,11 +814,12 @@ export function runAppleImport(db: Database, opts: AppleImportOptions): AppleImp
             p.subcategory,
             candidates[0].transaction_id
           );
+          claimed.add(candidates[0].transaction_id);
           preservedCount++;
           continue;
         }
-        // 0 or >1 candidates — can't safely re-apply. Record the loss
-        // so the caller can surface it.
+        // 0 or >1 unclaimed candidates — can't safely re-apply. Record
+        // the loss so the caller can surface it.
         droppedCount++;
         const merchantLabel = p.merchant_name ?? "(no merchant)";
         const reason = candidates.length === 0

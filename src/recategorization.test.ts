@@ -56,7 +56,7 @@ describe("applyRecategorizationRules — target_subcategory NULL semantics", () 
       subcategory: "GENERAL_MERCHANDISE_ONLINE_MARKETPLACES",
     });
     seedRule(db, {
-      pattern: "%AMAZON%",
+      pattern: "AMAZON",
       target_category: "GENERAL_MERCHANDISE",
       target_subcategory: null,
       label: "Amazon → General Merchandise",
@@ -83,7 +83,7 @@ describe("applyRecategorizationRules — target_subcategory NULL semantics", () 
       subcategory: "FOOD_AND_DRINK_GROCERIES",
     });
     seedRule(db, {
-      pattern: "%AMAZON%",
+      pattern: "AMAZON",
       target_category: "GENERAL_MERCHANDISE",
       target_subcategory: null,
     });
@@ -106,7 +106,7 @@ describe("applyRecategorizationRules — target_subcategory NULL semantics", () 
       subcategory: null,
     });
     seedRule(db, {
-      pattern: "%AMAZON%",
+      pattern: "AMAZON",
       target_category: "GENERAL_MERCHANDISE",
       target_subcategory: null,
     });
@@ -129,7 +129,7 @@ describe("applyRecategorizationRules — target_subcategory NULL semantics", () 
       subcategory: "FOOD_AND_DRINK_RESTAURANT",
     });
     seedRule(db, {
-      pattern: "%STARBUCKS%",
+      pattern: "STARBUCKS",
       target_category: "FOOD_AND_DRINK",
       target_subcategory: "FOOD_AND_DRINK_COFFEE",
     });

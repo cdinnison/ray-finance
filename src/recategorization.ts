@@ -1,5 +1,6 @@
 import type BetterSqlite3 from "libsql";
 import type { SyncLogger } from "./daily-sync.js";
+import { escapeLikePattern } from "./queries/index.js";
 type Database = BetterSqlite3.Database;
 
 export interface RecategorizationResult {
@@ -107,20 +108,38 @@ export function applyRecategorizationRules(db: Database, logger: SyncLogger = co
       // the aggregated earliest date to widen their rescore window so
       // daily_scores for old transactions that newly matched a rule get
       // refreshed.
+      //
+      // Escape LIKE wildcards (%/_/\\) in rule.match_pattern, wrap the
+      // escaped substring in %..%, and append ESCAPE '\\' to every LIKE
+      // clause. Without escaping, a malicious or mistaken rule whose
+      // match_pattern is `%` (or contains `%`/`_`) mass-recategorizes the
+      // whole database — add_recat_rule validates match_field but not
+      // match_pattern, so this is the authoritative defense. Matches the
+      // convention used everywhere else LIKE runs against user-supplied
+      // input (queries/index.ts: getTransactionsFiltered merchant filter,
+      // searchTransactions query).
+      //
+      // Semantic change vs. pre-F024: match_pattern is now a LITERAL
+      // substring (add_recat_rule schema description matches). Existing
+      // user rules that explicitly included %..% wrappers are escaped and
+      // wrapped by the engine, so they become "match literal %..%" — which
+      // won't fire on any real transaction name. Callers MUST drop any
+      // explicit %..% wrapping from stored rule patterns.
+      const likePattern = `%${escapeLikePattern(rule.match_pattern)}%`;
       const minSql = rule.target_subcategory
-        ? `SELECT MIN(date) as d FROM transactions WHERE ${col} LIKE ? AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)`
-        : `SELECT MIN(date) as d FROM transactions WHERE ${col} LIKE ? AND COALESCE(category, '') != ?`;
+        ? `SELECT MIN(date) as d FROM transactions WHERE ${col} LIKE ? ESCAPE '\\' AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)`
+        : `SELECT MIN(date) as d FROM transactions WHERE ${col} LIKE ? ESCAPE '\\' AND COALESCE(category, '') != ?`;
       const minRow = rule.target_subcategory
-        ? (db.prepare(minSql).get(rule.match_pattern, rule.target_category, rule.target_subcategory) as { d: string | null })
-        : (db.prepare(minSql).get(rule.match_pattern, rule.target_category) as { d: string | null });
+        ? (db.prepare(minSql).get(likePattern, rule.target_category, rule.target_subcategory) as { d: string | null })
+        : (db.prepare(minSql).get(likePattern, rule.target_category) as { d: string | null });
 
       const result = rule.target_subcategory
         ? db.prepare(
-            `UPDATE transactions SET category = ?, subcategory = ? WHERE ${col} LIKE ? AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)`
-          ).run(rule.target_category, rule.target_subcategory, rule.match_pattern, rule.target_category, rule.target_subcategory)
+            `UPDATE transactions SET category = ?, subcategory = ? WHERE ${col} LIKE ? ESCAPE '\\' AND (COALESCE(category, '') != ? OR COALESCE(subcategory, '') != ?)`
+          ).run(rule.target_category, rule.target_subcategory, likePattern, rule.target_category, rule.target_subcategory)
         : db.prepare(
-            `UPDATE transactions SET category = ?, subcategory = NULL WHERE ${col} LIKE ? AND COALESCE(category, '') != ?`
-          ).run(rule.target_category, rule.match_pattern, rule.target_category);
+            `UPDATE transactions SET category = ?, subcategory = NULL WHERE ${col} LIKE ? ESCAPE '\\' AND COALESCE(category, '') != ?`
+          ).run(rule.target_category, likePattern, rule.target_category);
 
       if (result.changes > 0) {
         logger.log(`  Recategorized ${result.changes} txn(s): ${rule.label || rule.match_pattern}`);

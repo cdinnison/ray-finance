@@ -5,6 +5,7 @@ import {
   getBudgetStatuses, getGoals, getCashFlowThisMonth,
   compareSpending, getNetWorthTrend,
   formatMoney as rawFormatMoney, categoryLabel,
+  normalizeOtherCategoryKey,
 } from "../queries/index.js";
 import { getLatestScore, getAchievements, getMonthlySavings, calculateDailyScore, checkAchievements } from "../scoring/index.js";
 import { generateAlerts } from "../alerts/index.js";
@@ -390,9 +391,12 @@ export async function showSpending(period = "this_month"): Promise<void> {
   // with both Apple-unmapped (NULL) and Plaid PFC fallback ('OTHER') rows
   // doesn't surface two duplicate "Other" lines. Sum totals AND counts
   // across the merged bucket so the "N txns" trailer reflects every row.
+  // Uses the shared normalizeOtherCategoryKey helper so the merge rule
+  // stays consistent with get_spending_summary, showRecap top-cats, and
+  // compareSpending.
   const rowMap = new Map<string | null, { total: number; count: number }>();
   for (const r of rawRows) {
-    const key = r.category == null || r.category === "OTHER" ? null : r.category;
+    const key = normalizeOtherCategoryKey(r.category);
     const prev = rowMap.get(key) ?? { total: 0, count: 0 };
     rowMap.set(key, { total: prev.total + r.total, count: prev.count + r.count });
   }
@@ -888,8 +892,9 @@ export function showRecap(period = "last_month"): void {
   const topCatMap = new Map<string | null, number>();
   for (const r of topCatRows) {
     // Normalize the two "Other" producers (NULL and literal 'OTHER') onto
-    // a single key; keep everything else keyed on its raw category string.
-    const key = r.category == null || r.category === "OTHER" ? null : r.category;
+    // a single key via the shared helper; keep everything else keyed on
+    // its raw category string.
+    const key = normalizeOtherCategoryKey(r.category);
     topCatMap.set(key, (topCatMap.get(key) ?? 0) + r.total);
   }
   const topCats = [...topCatMap.entries()]
@@ -1370,13 +1375,27 @@ export async function runImportApple(
     // them to a timestamped log file under ~/.ray/logs so the user has a
     // way to inspect the tail. Skip the file write when everything fits
     // on-screen — no log file needed.
+    //
+    // Filesystem failures must not crash the command after the spinner has
+    // already succeeded — the import rows are committed by this point, so
+    // surfacing "Import failed" over a failed mkdirSync/writeFileSync
+    // (EACCES on the user's home dir, ENOSPC, permission-locked
+    // ~/.ray/logs) would wrongly suggest the primary work failed. Degrade
+    // to logPath=null and a dim non-fatal note; the "... and N more" line
+    // below already gracefully omits when logPath is null. Matches the
+    // checkAchievements swallow-and-dim-log idiom below.
     let logPath: string | null = null;
     if (result.warnings.length > 10) {
-      const logDir = resolve(homedir(), ".ray", "logs");
-      mkdirSync(logDir, { recursive: true });
-      const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
-      logPath = resolve(logDir, `import-apple-warnings-${stamp}.log`);
-      writeFileSync(logPath, result.warnings.join("\n") + "\n");
+      try {
+        const logDir = resolve(homedir(), ".ray", "logs");
+        mkdirSync(logDir, { recursive: true });
+        const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+        logPath = resolve(logDir, `import-apple-warnings-${stamp}.log`);
+        writeFileSync(logPath, result.warnings.join("\n") + "\n");
+      } catch (err: any) {
+        logPath = null;
+        console.log(dim(`  (could not write warning log: ${(err && err.message) || String(err)})`));
+      }
     }
     console.log(`\n  ${chalk.yellow("Warnings:")}`);
     for (const w of result.warnings.slice(0, 10)) console.log(dim("    " + w));

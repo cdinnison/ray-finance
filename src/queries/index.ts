@@ -12,6 +12,61 @@ export const INCOME_EXCLUDED_CATEGORIES = [
 const INCOME_EXCLUDED_SQL = INCOME_EXCLUDED_CATEGORIES.map(c => `'${c}'`).join(', ');
 
 /**
+ * Categories excluded from spending/expense aggregates. Keep this list in
+ * sync with the expense-side filters across the codebase so headline totals
+ * (ray recap, ray spending, AI get_spending_summary, AI cash_flow, AI
+ * forecast_balance) all reference the same row set. Rationale per entry:
+ *   - TRANSFER_OUT/TRANSFER_IN: intra-user movements (credit-card payment
+ *     mirrors between checking and CC, bank-to-bank transfers). Double-
+ *     counting them would inflate both the expense aggregate and the income
+ *     aggregate on the same dollars.
+ *   - LOAN_PAYMENTS: principal+interest on a loan is a debt retirement, not
+ *     consumption. Including it would show a user who paid down $1k on a
+ *     credit card as having "spent" $1k more than they actually consumed,
+ *     and would double-count against the same $1k when it was originally
+ *     charged to the card (already captured on the CC side).
+ * Previously a few queries (getCashFlow, getCashFlowThisMonth,
+ * forecastBalance outflow) listed only TRANSFER_OUT/TRANSFER_IN, diverging
+ * from showRecap and compareSpending and leading to a visible mismatch
+ * between "Recap: $X spent" and "Cash flow expenses: $X + CC payments".
+ */
+export const SPENDING_EXCLUDED_CATEGORIES = [
+  'TRANSFER_OUT',
+  'TRANSFER_IN',
+  'LOAN_PAYMENTS',
+] as const;
+
+const SPENDING_EXCLUDED_SQL = SPENDING_EXCLUDED_CATEGORIES.map(c => `'${c}'`).join(', ');
+
+/**
+ * Normalize the "Other" category merge key so NULL and literal 'OTHER'
+ * (Plaid PFC fallback, SCREAMING_SNAKE) coalesce into a single bucket —
+ * categoryLabel(null) and categoryLabel('OTHER') BOTH render as "Other",
+ * so without this merge a month with both Apple-unmapped (NULL) and Plaid
+ * fallback ('OTHER') rows surfaces two duplicate "Other" rows. Keep the
+ * canonical key as `null` since categoryLabel(null) renders as "Other" and
+ * three of the four call sites already use null as the merge key.
+ *
+ * Writers that can produce each input:
+ *   - NULL: apple-import.ts:296 (unmapped CATEGORY_MAP entries); plaid/sync
+ *     writes NULL when personal_finance_category is absent.
+ *   - 'OTHER' (uppercase): plaid/sync.ts:102,240 — Plaid PFC primary is
+ *     SCREAMING_SNAKE per the Plaid docs, 'OTHER' is a legitimate value.
+ *   - 'Other' (title case): legacy synthesized rows; compareSpending's own
+ *     post-coalesce bucket label.
+ *
+ * Callers SHOULD use this helper instead of spelling out an inline
+ * `cat == null || cat === 'OTHER'` check so the rule stays in one place.
+ * If categoryLabel's NULL handling ever changes (e.g. renders as something
+ * other than "Other"), revisit this helper in lockstep.
+ */
+export function normalizeOtherCategoryKey(cat: string | null | undefined): string | null {
+  if (cat == null) return null;
+  if (cat === 'OTHER') return null;
+  return cat;
+}
+
+/**
  * Escape SQL LIKE wildcards in a user-supplied substring so it cannot widen
  * the match. SQLite LIKE treats `%` as any-sequence and `_` as any-single-char;
  * without escaping, an AI-steered input of `%` would match every row and `_`
@@ -19,8 +74,13 @@ const INCOME_EXCLUDED_SQL = INCOME_EXCLUDED_CATEGORIES.map(c => `'${c}'`).join('
  *
  * Callers MUST append `ESCAPE '\\'` to the LIKE clause to teach SQLite about
  * the escape byte — the helper backslash-escapes `%`, `_`, and `\` itself.
+ *
+ * Exported so non-queries modules (e.g. recategorization.ts) can share the
+ * same escape/ESCAPE-clause convention. Keep every caller paired with
+ * `ESCAPE '\\'` in the SQL — dropping the escape clause silently reverts
+ * the helper to a no-op because the `\` prefix is then a literal character.
  */
-function escapeLikePattern(s: string): string {
+export function escapeLikePattern(s: string): string {
   return s.replace(/[\\%_]/g, (c) => "\\" + c);
 }
 
@@ -194,15 +254,19 @@ export function getCashFlowThisMonth(db: Database): { income: number; expenses: 
   // Expense-side NULL-category filter (Apple imports write NULL for "Other"
   // and any unmapped category — see apple-import.ts CATEGORY_MAP). Plain
   // `NOT IN` drops NULL rows under SQLite three-valued logic, silently
-  // understating expense totals. The category list also excludes
-  // TRANSFER_IN because Apple Debit rows (Daily Cash clawbacks — see
-  // the Debit entry in apple-import.ts CATEGORY_MAP) map to TRANSFER_IN
-  // with amount > 0; excluding
-  // them keeps cash-reward corrections out of spend totals. We
-  // deliberately do NOT apply the same treatment to the income side
-  // (amount < 0): a NULL-category negative amount is overwhelmingly an
-  // Apple Card refund or a pre-mapping TRANSFER_IN, neither of which is
-  // income. Old `NOT IN` behavior is correct there.
+  // understating expense totals. The category list (SPENDING_EXCLUDED_SQL)
+  // also excludes TRANSFER_IN because Apple Debit rows (Daily Cash
+  // clawbacks — see the Debit entry in apple-import.ts CATEGORY_MAP) map
+  // to TRANSFER_IN with amount > 0; excluding them keeps cash-reward
+  // corrections out of spend totals. It excludes LOAN_PAYMENTS so Apple
+  // "Payment" rows (map to LOAN_PAYMENTS, amount > 0 on checking-side
+  // mirrors) don't inflate expenses — this matches the
+  // showRecap/compareSpending convention so "Recap" and "Cash flow
+  // expenses" agree for the same period. We deliberately do NOT apply
+  // NULL-inclusive treatment to the income side (amount < 0): a
+  // NULL-category negative amount is overwhelmingly an Apple Card refund
+  // or a pre-mapping TRANSFER_IN, neither of which is income. Old
+  // `NOT IN` behavior is correct there.
   const income = db
     .prepare(
       `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
@@ -215,7 +279,7 @@ export function getCashFlowThisMonth(db: Database): { income: number; expenses: 
     .prepare(
       `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
        WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-       AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN'))`
+       AND (category IS NULL OR category NOT IN (${SPENDING_EXCLUDED_SQL}))`
     )
     .get(monthStart, today) as { total: number };
 
@@ -344,16 +408,25 @@ export function getIncome(db: Database, startDate: string, endDate: string): { s
 
 // --- Full-text search ---
 
-export function searchTransactions(db: Database, query: string, limit = 30): { transaction_id: string; name: string; merchant_name: string | null; amount: number; category: string; date: string }[] {
+export function searchTransactions(db: Database, query: string, limit = 30): { transaction_id: string; account_id: string; account_name: string | null; name: string; merchant_name: string | null; amount: number; category: string; date: string }[] {
   // Escape %/_/\\ so an AI-steered `%` can't match every row. ESCAPE '\\'
   // teaches SQLite the escape byte; without it the LIKE pattern is wide
   // open to wildcard injection.
   const pattern = `%${escapeLikePattern(query)}%`;
+  // LEFT JOIN accounts to project account_name on every row — mirrors
+  // getTransactionsFiltered's projection so the AI's search_transactions and
+  // get_transactions tools return the same shape. Without account_name, the
+  // model cannot distinguish Apple Card rows from Plaid rows that share a
+  // generic merchant shape (e.g. an Uber charge on both). A LEFT JOIN keeps
+  // orphan transactions (account_id without a matching accounts row)
+  // visible with account_name=NULL rather than silently dropping them.
   return db.prepare(
-    `SELECT transaction_id, name, merchant_name, amount, category, date
-     FROM transactions
-     WHERE (name LIKE ? ESCAPE '\\' OR merchant_name LIKE ? ESCAPE '\\' OR category LIKE ? ESCAPE '\\')
-     ORDER BY date DESC LIMIT ?`
+    `SELECT t.transaction_id, t.account_id, a.name AS account_name,
+            t.name, t.merchant_name, t.amount, t.category, t.date
+     FROM transactions t
+     LEFT JOIN accounts a ON t.account_id = a.account_id
+     WHERE (t.name LIKE ? ESCAPE '\\' OR t.merchant_name LIKE ? ESCAPE '\\' OR t.category LIKE ? ESCAPE '\\')
+     ORDER BY t.date DESC LIMIT ?`
   ).all(pattern, pattern, pattern, limit) as any[];
 }
 
@@ -367,7 +440,10 @@ export function getCashFlow(db: Database, startDate: string, endDate: string): {
   // amount < 0 is overwhelmingly an Apple refund or a pre-mapping
   // TRANSFER_IN, not real income. Expenses use NULL-inclusive because
   // Apple "Other"/unmapped rows (amount > 0) are genuinely spend we'd
-  // otherwise silently drop.
+  // otherwise silently drop. Uses SPENDING_EXCLUDED_SQL so LOAN_PAYMENTS
+  // (Apple "Payment" rows on the checking-side mirror, amount > 0) are
+  // excluded from expenses — matches showRecap and compareSpending so
+  // headline totals agree across the three surfaces.
   const income = db.prepare(
     `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
      WHERE amount < 0 AND date BETWEEN ? AND ? AND pending = 0
@@ -377,7 +453,7 @@ export function getCashFlow(db: Database, startDate: string, endDate: string): {
   const expenses = db.prepare(
     `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
      WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN'))`
+     AND (category IS NULL OR category NOT IN (${SPENDING_EXCLUDED_SQL}))`
   ).get(startDate, endDate) as { total: number };
 
   const net = income.total - expenses.total;
@@ -387,7 +463,7 @@ export function getCashFlow(db: Database, startDate: string, endDate: string): {
   const rows = db.prepare(
     `SELECT strftime('%Y-%m', date) as month,
        SUM(CASE WHEN amount < 0 AND category NOT IN (${INCOME_EXCLUDED_SQL}) THEN ABS(amount) ELSE 0 END) as income,
-       SUM(CASE WHEN amount > 0 AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN')) THEN amount ELSE 0 END) as expenses
+       SUM(CASE WHEN amount > 0 AND (category IS NULL OR category NOT IN (${SPENDING_EXCLUDED_SQL})) THEN amount ELSE 0 END) as expenses
      FROM transactions
      WHERE date BETWEEN ? AND ? AND pending = 0
      GROUP BY month ORDER BY month`
@@ -435,7 +511,8 @@ export function forecastBalance(db: Database, accountId?: string, months = 6): {
   // Outflow uses NULL-inclusive `(category IS NULL OR category NOT IN ...)`
   // so Apple "Other"/unmapped rows (amount > 0) are counted as spend, while
   // credit-card-payment mirrors (TRANSFER_OUT / TRANSFER_IN positive-amount
-  // rows on the bank side) are excluded — otherwise they'd inflate
+  // rows on the bank side) are excluded. LOAN_PAYMENTS is also excluded
+  // via SPENDING_EXCLUDED_SQL so Apple "Payment" rows don't inflate
   // avgMonthlyOutflow and over-project future balance drop. Matches the
   // expense-side treatment in getCashFlow / getCashFlowThisMonth.
   const inflow = db.prepare(
@@ -447,7 +524,7 @@ export function forecastBalance(db: Database, accountId?: string, months = 6): {
   const outflow = db.prepare(
     `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
      WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN'))${flowCondition}`
+     AND (category IS NULL OR category NOT IN (${SPENDING_EXCLUDED_SQL}))${flowCondition}`
   ).get(...flowParams) as { total: number };
 
   const avgInflow = inflow.total / 3;
@@ -633,12 +710,14 @@ export function getDebts(db: Database): {
  * list, matching the NULL-inclusive convention used by every other
  * expense-side query (getCashFlow, getCashFlowThisMonth, showRecap, etc.).
  * A previous carve-out excluded NULL here to avoid duplicate "Other" UI
- * rows (categoryLabel(null) and categoryLabel('Other') both render as
- * "Other"); we now preserve that guarantee by coalescing NULL into the
- * literal 'Other' key in the JS aggregation step BELOW, so a NULL row and
- * a literal 'Other' row merge into one logical bucket before p1Map/p2Map
- * are built. Keep the coalesce in sync with categoryLabel's NULL handling
- * — if that renderer changes, revisit the bucket key here.
+ * rows (categoryLabel(null) and categoryLabel('OTHER') both render as
+ * "Other"); we now preserve that guarantee by running NULL and literal
+ * 'OTHER' (uppercase — Plaid PFC SCREAMING_SNAKE fallback) through
+ * normalizeOtherCategoryKey in the JS aggregation step BELOW, so NULL,
+ * 'OTHER', and 'Other' all merge into a single bucket keyed on the literal
+ * 'Other' label before p1Map/p2Map are built. Keep the coalesce in sync
+ * with categoryLabel's NULL handling — if that renderer changes, revisit
+ * the bucket key here.
  */
 export function compareSpending(db: Database, period1Start: string, period1End: string, period2Start: string, period2End: string): {
   period1Total: number; period2Total: number; difference: number; pctChange: number;
@@ -648,7 +727,7 @@ export function compareSpending(db: Database, period1Start: string, period1End: 
     return db.prepare(
       `SELECT category, SUM(amount) as total FROM transactions
        WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-       AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))
+       AND (category IS NULL OR category NOT IN (${SPENDING_EXCLUDED_SQL}))
        GROUP BY category`
     ).all(start, end) as { category: string | null; total: number }[];
   };
@@ -656,18 +735,25 @@ export function compareSpending(db: Database, period1Start: string, period1End: 
   const p1 = getByCategory(period1Start, period1End);
   const p2 = getByCategory(period2Start, period2End);
 
-  // Coalesce NULL into the literal 'Other' key BEFORE constructing the
-  // period maps so a NULL-category row and a literal-'Other' row merge
-  // into one bucket (categoryLabel renders both as "Other" — two buckets
-  // would surface as duplicate UI rows).
+  // Coalesce NULL + literal 'OTHER' into a single 'Other' key BEFORE
+  // constructing the period maps so NULL, Plaid's SCREAMING_SNAKE 'OTHER',
+  // and legacy 'Other' rows all merge into one bucket (categoryLabel
+  // renders all three as "Other" — multiple buckets would surface as
+  // duplicate UI rows). Uses the shared normalizeOtherCategoryKey helper
+  // so this rule stays in one place; the helper returns null as its
+  // canonical key, which we map to the literal 'Other' string here
+  // because the output `categories` entries are typed string (not
+  // string | null). The downstream consumer passes these back through
+  // categoryLabel, which renders both null and 'Other' identically.
+  const toMergeKey = (cat: string | null): string => normalizeOtherCategoryKey(cat) ?? "Other";
   const p1Map = new Map<string, number>();
   for (const r of p1) {
-    const key = r.category ?? "Other";
+    const key = toMergeKey(r.category);
     p1Map.set(key, (p1Map.get(key) ?? 0) + r.total);
   }
   const p2Map = new Map<string, number>();
   for (const r of p2) {
-    const key = r.category ?? "Other";
+    const key = toMergeKey(r.category);
     p2Map.set(key, (p2Map.get(key) ?? 0) + r.total);
   }
   const allCats = new Set([...p1Map.keys(), ...p2Map.keys()]);

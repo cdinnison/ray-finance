@@ -508,10 +508,14 @@ describe("runAppleImport", () => {
     // Apple maps Poke's "Restaurants" -> FOOD_AND_DRINK / FOOD_AND_DRINK_RESTAURANT.
     // A category-only rule (null target_subcategory) must change the top-level
     // category AND clear the stale subcategory, not leave an inconsistent pair.
+    // Under F024 the pattern is treated as a LITERAL substring (wildcards
+    // escaped, %-wrapping supplied by the engine), so callers pass a bare
+    // substring. The merchant column holds "Poke Tiki Costa Mesa" so
+    // substring "Poke" matches.
     db.prepare(
       `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
        VALUES (?, ?, ?, ?, ?)`
-    ).run("merchant_name", "%Poke%", "GENERAL_MERCHANDISE", null, "Poke -> general");
+    ).run("merchant_name", "Poke", "GENERAL_MERCHANDISE", null, "Poke -> general");
 
     runAppleImport(db, { csvPath: path, balance: 0 });
     const recat = applyRecategorizationRules(db);
@@ -533,10 +537,11 @@ describe("runAppleImport", () => {
     // Apple maps Poke's "Restaurants" -> FOOD_AND_DRINK / FOOD_AND_DRINK_RESTAURANT.
     // This rule refines only the subcategory — same top-level category — which
     // an earlier version of the helper silently excluded via its WHERE clause.
+    // Under F024 the pattern is a literal substring (engine wraps %..%).
     db.prepare(
       `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
        VALUES (?, ?, ?, ?, ?)`
-    ).run("merchant_name", "%Poke%", "FOOD_AND_DRINK", "FOOD_AND_DRINK_FAST_FOOD", "Poke -> fast food");
+    ).run("merchant_name", "Poke", "FOOD_AND_DRINK", "FOOD_AND_DRINK_FAST_FOOD", "Poke -> fast food");
 
     runAppleImport(db, { csvPath: path, balance: 0 });
     const recat = applyRecategorizationRules(db);
@@ -719,7 +724,7 @@ describe("runAppleImport", () => {
     db.prepare(
       `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
        VALUES (?, ?, ?, ?, ?)`
-    ).run("merchant_name", "%MysteryMerchant%", "GENERAL_MERCHANDISE", null, "Mystery -> general");
+    ).run("merchant_name", "MysteryMerchant", "GENERAL_MERCHANDISE", null, "Mystery -> general");
 
     const recat = applyRecategorizationRules(db);
     expect(recat).toMatchObject({ rulesEvaluated: 1, rulesSkipped: 0, transactionsUpdated: 1 });
@@ -958,12 +963,145 @@ describe("runAppleImport", () => {
     try { unlinkSync(newPath); } catch {}
   });
 
+  it("two preserved rows sharing shape; refined CSV only has one matching row → preserved=1, dropped=1", () => {
+    // Regression for F001: two preserved rows P1 and P2 share the same
+    // (date, amount, merchant) but have different descriptions and thus
+    // different transaction_ids. The refined CSV contains only ONE row with
+    // that shape (Apple dropped/merged one of them). Pass 1 cannot
+    // exact-match either (both ids are gone because the fresh INSERTs get
+    // new ids from the refined descriptions), so both fall to Pass 2. The
+    // first row processed by Pass 2 finds exactly one unclaimed candidate
+    // and binds to it; the second row then finds zero unclaimed candidates
+    // (the first already claimed it) and is dropped with a warning.
+    // Pre-fix bug: both preserved rows would see length==1 candidates and
+    // BOTH would call restoreUserFields on the same target, silently
+    // overwriting the first restore's user-edits with the second's.
+    const firstPath = writeCsv([
+      VALID_HEADER,
+      `04/10/2026,04/11/2026,"COFFEE","Same Merchant","Restaurants","Purchase","5.00","Adam"`,
+      `04/10/2026,04/11/2026,"TEA","Same Merchant","Restaurants","Purchase","5.00","Adam"`,
+    ]);
+    const db = freshDb();
+    runAppleImport(db, { csvPath: firstPath, balance: 0 });
+
+    // Annotate both rows distinctly so we can verify no overwrite occurs.
+    db.prepare(`UPDATE transactions SET note = ? WHERE name = ?`).run("note-A", "COFFEE");
+    db.prepare(`UPDATE transactions SET note = ? WHERE name = ?`).run("note-B", "TEA");
+
+    // Refined CSV contains only a SINGLE row with the same (date, amount,
+    // merchant). Both original rows' ids are gone (new description →
+    // new hash) and there is only one surviving target row.
+    const refinedPath = writeCsv([
+      VALID_HEADER,
+      `04/10/2026,04/11/2026,"REFINED DESCRIPTION","Same Merchant","Restaurants","Purchase","5.00","Adam"`,
+    ]);
+    const result = runAppleImport(db, {
+      csvPath: refinedPath,
+      balance: 0,
+      replaceRange: true,
+    });
+
+    expect(result.preservedCount).toBe(1);
+    expect(result.droppedCount).toBe(1);
+    // The warning must describe an ambiguous/no-match drop (zero unclaimed
+    // candidates for the second preserved row after the first claimed the
+    // sole target).
+    expect(result.warnings.some(w => /dropped: no matching row/.test(w))).toBe(true);
+
+    // Exactly one surviving row with a non-null note; its note is one of
+    // the two originals (not both overwritten into one another).
+    const survivors: any[] = db
+      .prepare(`SELECT note FROM transactions WHERE merchant_name = 'Same Merchant' AND note IS NOT NULL`)
+      .all();
+    expect(survivors).toHaveLength(1);
+    expect(["note-A", "note-B"]).toContain(survivors[0].note);
+
+    try { unlinkSync(firstPath); } catch {}
+    try { unlinkSync(refinedPath); } catch {}
+  });
+
+  it("P1 exact-id match, P2 shape-match → both preserved; P2 binds to the other row", () => {
+    // Regression for F001 spurious-ambiguous path: two preserved rows P1
+    // and P2 share (date, amount, merchant). P1's description is
+    // unchanged in the re-import (id stable → Pass 1 exact match). P2's
+    // description is refined (id changes → Pass 2 fallback). Without
+    // claimed-id tracking, Pass 2 sees BOTH fresh rows as candidates
+    // (R1 already claimed by P1 + R2 the refined row) → length==2 →
+    // spurious "ambiguous, dropped" even though exactly one UNCLAIMED
+    // candidate (R2) exists.
+    // With the two-pass claimed Set, P1 binds in Pass 1 and adds its id
+    // to `claimed`, so Pass 2 sees exactly one unclaimed candidate (R2)
+    // and restores onto it.
+    const firstPath = writeCsv([
+      VALID_HEADER,
+      `04/10/2026,04/11/2026,"COFFEE","Same Merchant","Restaurants","Purchase","5.00","Adam"`,
+      `04/10/2026,04/11/2026,"TEA","Same Merchant","Restaurants","Purchase","5.00","Adam"`,
+    ]);
+    const db = freshDb();
+    runAppleImport(db, { csvPath: firstPath, balance: 0 });
+
+    const coffeeBefore: any = db
+      .prepare(`SELECT transaction_id FROM transactions WHERE name = 'COFFEE'`)
+      .get();
+    const teaBefore: any = db
+      .prepare(`SELECT transaction_id FROM transactions WHERE name = 'TEA'`)
+      .get();
+
+    db.prepare(`UPDATE transactions SET note = ?, label = ? WHERE transaction_id = ?`).run(
+      "coffee-note",
+      "caffeine",
+      coffeeBefore.transaction_id
+    );
+    db.prepare(`UPDATE transactions SET note = ?, label = ? WHERE transaction_id = ?`).run(
+      "tea-note",
+      "tea-time",
+      teaBefore.transaction_id
+    );
+
+    // Refined CSV: COFFEE description unchanged (id stable), TEA refined
+    // (id changes).
+    const refinedPath = writeCsv([
+      VALID_HEADER,
+      `04/10/2026,04/11/2026,"COFFEE","Same Merchant","Restaurants","Purchase","5.00","Adam"`,
+      `04/10/2026,04/11/2026,"TEA - EARL GREY","Same Merchant","Restaurants","Purchase","5.00","Adam"`,
+    ]);
+    const result = runAppleImport(db, {
+      csvPath: refinedPath,
+      balance: 0,
+      replaceRange: true,
+    });
+
+    expect(result.preservedCount).toBe(2);
+    expect(result.droppedCount).toBe(0);
+    expect(result.warnings.some(w => /dropped/.test(w))).toBe(false);
+
+    // COFFEE's note/label survive via exact-id Pass 1.
+    const coffeeAfter: any = db
+      .prepare(`SELECT note, label FROM transactions WHERE name = 'COFFEE'`)
+      .get();
+    expect(coffeeAfter.note).toBe("coffee-note");
+    expect(coffeeAfter.label).toBe("caffeine");
+
+    // TEA's note/label bind to the refined row via Pass 2 (claimed
+    // excluded COFFEE's row so the only unclaimed candidate is TEA -
+    // EARL GREY).
+    const teaAfter: any = db
+      .prepare(`SELECT note, label FROM transactions WHERE name = 'TEA - EARL GREY'`)
+      .get();
+    expect(teaAfter).toBeDefined();
+    expect(teaAfter.note).toBe("tea-note");
+    expect(teaAfter.label).toBe("tea-time");
+
+    try { unlinkSync(firstPath); } catch {}
+    try { unlinkSync(refinedPath); } catch {}
+  });
+
   it("skips a rule with invalid match_field without throwing or touching data", () => {
     const db = freshDb();
     db.prepare(
       `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
        VALUES (?, ?, ?, ?, ?)`
-    ).run("transaction_id; DROP TABLE transactions --", "%anything%", "FOOD_AND_DRINK", null, "evil");
+    ).run("transaction_id; DROP TABLE transactions --", "anything", "FOOD_AND_DRINK", null, "evil");
 
     runAppleImport(db, { csvPath: path, balance: 0 });
     const recat = applyRecategorizationRules(db);
@@ -972,6 +1110,77 @@ describe("runAppleImport", () => {
     expect(recat.transactionsUpdated).toBe(0);
     const count: any = db.prepare(`SELECT COUNT(*) as n FROM transactions`).get();
     expect(count.n).toBeGreaterThan(0);
+  });
+
+  // ─── F024: LIKE-wildcard escaping on match_pattern ───
+  //
+  // match_field is allowlisted against MATCH_FIELD_SQL, but match_pattern
+  // previously flowed into the LIKE clause as a bind parameter without
+  // wildcard escaping. An attacker (or a mistaken rule) with match_pattern
+  // = '%' mass-recategorizes the whole DB, and an `_` in a legitimate
+  // substring (e.g. 'Car_Main') silently wildcards the middle char.
+  it("F024: match_pattern='%' does NOT match every row (wildcard escaped)", () => {
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 0 });
+
+    // A literal `%` substring shouldn't exist in any seeded Apple row
+    // description — so the rule should match ZERO transactions.
+    db.prepare(
+      `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run("name", "%", "GENERAL_MERCHANDISE", null, "wide-open");
+
+    const before: any[] = db.prepare(`SELECT transaction_id, category FROM transactions`).all();
+    const recat = applyRecategorizationRules(db);
+
+    // Pre-F024: '%' matched every row and recat.transactionsUpdated was
+    // the full transaction count, wiping every category. Post-F024: zero
+    // matches because the pattern is treated literally.
+    expect(recat.transactionsUpdated).toBe(0);
+
+    // Nothing changed.
+    const after: any[] = db.prepare(`SELECT transaction_id, category FROM transactions`).all();
+    expect(after.length).toBe(before.length);
+    const catsBefore = new Map(before.map((r: any) => [r.transaction_id, r.category]));
+    for (const row of after) {
+      expect(row.category).toBe(catsBefore.get(row.transaction_id));
+    }
+  });
+
+  it("F024: match_pattern containing `_` does NOT single-char-wildcard", () => {
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 0 });
+
+    // The seeded CSV has a 'Poke Tiki' row. A pattern 'P_ke Tiki' with `_`
+    // as a literal character should NOT match — `_` is SQL's single-char
+    // wildcard and would otherwise match 'Poke Tiki'.
+    db.prepare(
+      `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run("merchant_name", "P_ke Tiki", "GENERAL_MERCHANDISE", null, "single-char-wildcard");
+
+    const recat = applyRecategorizationRules(db);
+    // Pre-F024: `_` wildcarded, matching 'Poke Tiki' → transactionsUpdated >= 1.
+    // Post-F024: `_` literal, matching zero rows.
+    expect(recat.transactionsUpdated).toBe(0);
+  });
+
+  it("F024: literal substring pattern still matches (positive regression)", () => {
+    const db = freshDb();
+    runAppleImport(db, { csvPath: path, balance: 0 });
+
+    // 'Poke' is a real substring of the seeded merchant name
+    // 'Poke Tiki Costa Mesa'. Under F024 the engine wraps match_pattern in
+    // %..% after escaping, so callers pass a literal substring and get
+    // substring matching semantics. Positive regression: the common case
+    // must still fire.
+    db.prepare(
+      `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run("merchant_name", "Poke", "GENERAL_MERCHANDISE", null, "literal");
+
+    const recat = applyRecategorizationRules(db);
+    expect(recat.transactionsUpdated).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -998,6 +1207,52 @@ describe("sanitizeForPrompt (merchant-name prompt injection defense)", () => {
 
   it("leaves a normal merchant name mostly untouched", () => {
     expect(sanitizeForPrompt("Poke Tiki Costa Mesa")).toBe("Poke Tiki Costa Mesa");
+  });
+
+  // ─── F021: Unicode bidi / format / zero-width ───
+  //
+  // C0 controls + DEL are not enough: Unicode bidi overrides (U+202A–202E)
+  // can reverse how text renders in terminals and LLM contexts, zero-width
+  // joiners (U+200B–200D) can hide instruction fragments from a casual
+  // reviewer, and isolate controls (U+2066–2069) smuggle modern bidi
+  // payloads. A crafted merchant name exploiting any of these would slip
+  // past a C0-only strip while still manipulating display.
+  it("strips Unicode RLO (Right-to-Left Override) from a merchant name", () => {
+    // U+202E flips the rendering direction of the characters that follow,
+    // which can visually mask an instruction-shaped substring.
+    const crafted = "ACME‮IGNORE";
+    const cleaned = sanitizeForPrompt(crafted);
+    expect(cleaned).not.toMatch(/‮/);
+  });
+
+  it("strips Unicode LRO (Left-to-Right Override) from a merchant name", () => {
+    const crafted = "ACME‭OVERRIDE";
+    const cleaned = sanitizeForPrompt(crafted);
+    expect(cleaned).not.toMatch(/‭/);
+  });
+
+  it("strips Unicode ZWJ (Zero-Width Joiner) and ZWSP (Zero-Width Space)", () => {
+    // ZWJ/ZWSP let a crafted payload hide instruction fragments between
+    // benign-looking characters.
+    const craftedZwj = "ACME‍IGNORE";
+    expect(sanitizeForPrompt(craftedZwj)).not.toMatch(/‍/);
+
+    const craftedZwsp = "ACME​HIDDEN";
+    expect(sanitizeForPrompt(craftedZwsp)).not.toMatch(/​/);
+  });
+
+  it("strips Unicode isolate controls (U+2066..U+2069) used in modern bidi smuggling", () => {
+    // FSI (First Strong Isolate) + PDI (Pop Directional Isolate) and
+    // friends can be chained to break out of expected rendering scope.
+    const crafted = "ACME⁦⁩PAYLOAD";
+    const cleaned = sanitizeForPrompt(crafted);
+    expect(cleaned).not.toMatch(/[⁦-⁩]/);
+  });
+
+  it("strips Unicode BOM / ZWNBSP (U+FEFF)", () => {
+    const crafted = "﻿ACME";
+    const cleaned = sanitizeForPrompt(crafted);
+    expect(cleaned).not.toMatch(/﻿/);
   });
 });
 
@@ -1027,6 +1282,23 @@ describe("stripControls (full-length injection defense for memories)", () => {
   it("returns empty string for null/undefined", () => {
     expect(stripControls(null)).toBe("");
     expect(stripControls(undefined)).toBe("");
+  });
+
+  // ─── F021: memory content Unicode bidi/format defense ───
+  //
+  // Memories are injected into the system prompt via stripControls; the
+  // control-char strip must now cover Unicode bidi + zero-width chars too
+  // so a crafted memory like
+  //   "I prefer formal tone‮INSTRUCTION-PAYLOAD"
+  // can't manipulate terminal/LLM rendering or hide directives between
+  // benign characters.
+  it("strips RLO, ZWJ, and BOM from a crafted memory without truncating", () => {
+    const crafted = "user pref:‮SMUGGLE‍ and​ extra﻿text";
+    const cleaned = stripControls(crafted);
+    expect(cleaned).not.toMatch(/[​-‏‪-‮⁠-⁯﻿]/);
+    // Length not clipped to 80 chars: the cleaned string is shorter than
+    // the crafted input (control chars removed) but full content survived.
+    expect(cleaned.length).toBeGreaterThan(20);
   });
 });
 
@@ -1211,6 +1483,161 @@ describe("calculate_debt_payoff cascade roll-over (avalanche + snowball + stuck)
     expect(biggerMonths).toBeGreaterThan(0);
     expect(biggerMonths).toBeLessThan(12);
     expect(out).toMatch(/Debt-free by:/);
+  });
+});
+
+// ─── F016 + F027: debt-payoff footer completeness ───
+//
+// F027: when ANY debt was skipped (unknown APR/payment), always surface
+// the "ask the user for APR/minimum" reminder — regardless of whether the
+// simulation branch finished, got stuck, or produced no timeline. Before
+// F027, that reminder only appeared on the (maxMonths>0 && !anyStuck &&
+// anySkipped) branch; when skips coexisted with a stuck simulation the
+// model got the stuck message without the reminder.
+//
+// F016: when EVERY debt was skipped (all mortgages / all unknown-APR
+// loans), maxMonths=0 and anyStuck=false so none of the existing footer
+// branches fire. The user sees "Total interest: $0.00" with no footer.
+// Surface an explicit "No debts were simulated." note so the empty
+// simulation isn't mistaken for a clean debt-free forecast.
+describe("calculate_debt_payoff footer completeness (F016 + F027)", () => {
+  function seedDebt(db: any, id: string, name: string, balance: number, rate: number | null, minPayment: number, type: "credit" | "loan" | "mortgage" = "credit") {
+    db.prepare(
+      `INSERT INTO institutions (item_id, access_token, name, products)
+       VALUES (?, 'manual', ?, '[]')`
+    ).run(`inst-${id}`, `Bank ${id}`);
+    const acctType = type === "mortgage" ? "loan" : type;
+    db.prepare(
+      `INSERT INTO accounts (account_id, item_id, name, type, current_balance)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(id, `inst-${id}`, name, acctType, balance);
+    db.prepare(
+      `INSERT INTO liabilities (account_id, type, interest_rate, current_balance, minimum_payment)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(id, type, rate, balance, minPayment);
+  }
+
+  it("F027: anyStuck + anySkipped both emit the 'ask for APR' reminder alongside stuck message", async () => {
+    const db = freshDb();
+    // One stuck debt (min < interest, null rate-guard doesn't apply because
+    // rate is known at 20 and minPayment=50 so it simulates in negative
+    // amortization) + one skipped debt (null rate, mortgage-shaped).
+    seedDebt(db, "drowning", "Drowning Card", 3000, 20, 50, "credit");
+    // Mortgage-shaped: null rate + type=mortgage → skipped by the tightened guard
+    seedDebt(db, "mortgage", "Home Mortgage", 350000, null, 0, "mortgage");
+
+    const out = await executeTool(db as any, "calculate_debt_payoff", { strategy: "avalanche", extra_monthly: 0 });
+
+    // Stuck message present.
+    expect(out).toMatch(/cannot reach payoff/);
+    expect(out).toMatch(/Some debts cannot reach payoff/);
+    // Reminder present too — pre-F027, the anyStuck branch omitted it.
+    expect(out).toMatch(/ask the user for their APR and minimum payment/);
+    // Still reports the mortgage as skipped.
+    expect(out).toMatch(/Home Mortgage/);
+    expect(out).toMatch(/APR and\/or minimum payment unknown/);
+  });
+
+  it("F016: when every debt is skipped, emits 'No debts were simulated.' with the APR reminder (not duplicated)", async () => {
+    const db = freshDb();
+    // All debts get skipped: two mortgage-shaped (null rate + type=loan).
+    seedDebt(db, "mortgage1", "Mortgage A", 300000, null, 0, "mortgage");
+    seedDebt(db, "mortgage2", "Mortgage B", 250000, null, 0, "mortgage");
+
+    const out = await executeTool(db as any, "calculate_debt_payoff", { strategy: "avalanche", extra_monthly: 0 });
+
+    // Both debts show as skipped.
+    expect(out).toMatch(/Mortgage A/);
+    expect(out).toMatch(/Mortgage B/);
+    expect(out).toMatch(/APR and\/or minimum payment unknown/);
+    // No fabricated timeline — no simulation output for these debts.
+    expect(out).not.toMatch(/→ \d+ months/);
+    // The Total interest: $0.00 line is now followed by an explanation.
+    expect(out).toMatch(/Total interest: \$0\.00/);
+    expect(out).toMatch(/No debts were simulated\./);
+    // The APR reminder fires exactly ONCE — F027's hoisted if + F016's
+    // terminal block must not both emit it. Count occurrences.
+    const matches = out.match(/ask the user for their APR and minimum payment/g) || [];
+    expect(matches).toHaveLength(1);
+    // "Debt-free by" must NOT appear — nothing to be debt-free by.
+    expect(out).not.toMatch(/Debt-free by:/);
+  });
+
+  it("F027 preserves existing partial-finish branch: simulated-portion finish date + hoisted reminder (reminder once)", async () => {
+    const db = freshDb();
+    // One simulable debt + one skipped debt → simulated portion finishes,
+    // hoisted reminder must fire once (previously the partial-finish branch
+    // carried the reminder inline; now it comes from the hoist instead).
+    seedDebt(db, "real-card",  "Real Card",      1000, 20,  50, "credit");
+    seedDebt(db, "mort",        "Home Mortgage",  300000, null, 0, "mortgage");
+
+    const out = await executeTool(db as any, "calculate_debt_payoff", { strategy: "avalanche", extra_monthly: 2000 });
+
+    expect(out).toMatch(/Real Card/);
+    expect(out).toMatch(/Home Mortgage/);
+    expect(out).toMatch(/Debt-free \(simulated portion\) by:/);
+    // Reminder appears exactly once (hoisted pre-branch, not repeated).
+    const matches = out.match(/ask the user for their APR and minimum payment/g) || [];
+    expect(matches).toHaveLength(1);
+  });
+});
+
+// ─── F040: avalanche sort ranks unknown-APR at ASSUMED_UNKNOWN_APR ───
+//
+// Before F040, avalanche sort sent null-rate debts to the bottom via
+// ?? -Infinity, contradicting the simulator's treatment (rate ?? 20). A
+// 0% promo balance scheduled ahead of an unknown-APR card is materially
+// wrong because the simulator then pays the 0% first even though the
+// unknown-APR card is actually accruing interest at 20%. After F040, the
+// sort ranks null at 20% — matching effectiveRate.
+describe("calculate_debt_payoff avalanche sort (F040)", () => {
+  function seedDebt(db: any, id: string, name: string, balance: number, rate: number | null, minPayment: number) {
+    db.prepare(
+      `INSERT INTO institutions (item_id, access_token, name, products)
+       VALUES (?, 'manual', ?, '[]')`
+    ).run(`inst-${id}`, `Bank ${id}`);
+    db.prepare(
+      `INSERT INTO accounts (account_id, item_id, name, type, current_balance)
+       VALUES (?, ?, ?, 'credit', ?)`
+    ).run(id, `inst-${id}`, name, balance);
+    db.prepare(
+      `INSERT INTO liabilities (account_id, type, interest_rate, current_balance, minimum_payment)
+       VALUES (?, 'credit', ?, ?, ?)`
+    ).run(id, rate, balance, minPayment);
+  }
+
+  it("null-rate card sorts ABOVE a 0% promo balance under avalanche", async () => {
+    const db = freshDb();
+    // 0% promo balance + null-rate retail card (card-shaped: type=credit,
+    // small balance, real minPayment so it simulates rather than skips).
+    seedDebt(db, "promo",   "Promo Card",   500, 0,    25);
+    seedDebt(db, "unknown", "Unknown Card", 500, null, 30);
+
+    const out = await executeTool(db as any, "calculate_debt_payoff", { strategy: "avalanche", extra_monthly: 0 });
+
+    // Both should simulate. Unknown Card should appear BEFORE Promo Card
+    // in the output because avalanche sort ranks it at 20% (higher than 0%).
+    const unknownIdx = out.indexOf("Unknown Card");
+    const promoIdx = out.indexOf("Promo Card");
+    expect(unknownIdx).toBeGreaterThan(-1);
+    expect(promoIdx).toBeGreaterThan(-1);
+    expect(unknownIdx).toBeLessThan(promoIdx);
+  });
+
+  it("a genuinely-higher-rate known card still sorts above null-rate", async () => {
+    const db = freshDb();
+    // 25% known card vs null-rate card (assumed 20%). Known 25% beats the
+    // 20% assumption, so it should still sort first.
+    seedDebt(db, "high",    "High Rate Card", 800, 25,   40);
+    seedDebt(db, "unknown", "Unknown Card",   500, null, 30);
+
+    const out = await executeTool(db as any, "calculate_debt_payoff", { strategy: "avalanche", extra_monthly: 0 });
+
+    const highIdx = out.indexOf("High Rate Card");
+    const unknownIdx = out.indexOf("Unknown Card");
+    expect(highIdx).toBeGreaterThan(-1);
+    expect(unknownIdx).toBeGreaterThan(-1);
+    expect(highIdx).toBeLessThan(unknownIdx);
   });
 });
 

@@ -6,7 +6,7 @@ import {
   getIncome, searchTransactions, getCashFlow, forecastBalance,
   getPortfolio, getInvestmentPerformance, getDebts,
   compareSpending, getNetWorthTrend,
-  formatMoney, categoryLabel,
+  formatMoney, categoryLabel, normalizeOtherCategoryKey,
 } from "../queries/index.js";
 import { getLatestScore, getMonthlySavings } from "../scoring/index.js";
 import { generateAlerts } from "../alerts/index.js";
@@ -320,7 +320,7 @@ export const toolDefinitions: ToolDefinition[] = [
       type: "object" as const,
       properties: {
         match_field: { type: "string", description: "Field to match: name, merchant_name" },
-        match_pattern: { type: "string", description: "Pattern to match (case-insensitive substring)" },
+        match_pattern: { type: "string", description: "Pattern to match (case-insensitive literal substring — wildcard chars like % and _ are escaped before matching)" },
         target_category: { type: "string", description: "Category to assign" },
         target_subcategory: { type: "string", description: "Subcategory (optional)" },
         label: { type: "string", description: "Label to apply (optional)" },
@@ -397,10 +397,12 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       // model doesn't see two duplicate "Other:" lines (from Apple-unmapped
       // NULL rows + Plaid PFC fallback 'OTHER' rows) and mistake them for
       // separate categories. Sum totals AND transaction counts across the
-      // merged bucket. Matches compareSpending's canonical pattern.
+      // merged bucket. Uses the shared normalizeOtherCategoryKey helper so
+      // the rule stays in one place across showSpending, showRecap
+      // top-cats, and compareSpending (via its own internal coalesce).
       const rowMap = new Map<string | null, { total: number; count: number }>();
       for (const r of rawRows) {
-        const key = r.category == null || r.category === "OTHER" ? null : r.category;
+        const key = normalizeOtherCategoryKey(r.category);
         const prev = rowMap.get(key) ?? { total: 0, count: 0 };
         rowMap.set(key, { total: prev.total + r.total, count: prev.count + r.count });
       }
@@ -537,7 +539,11 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       // Pipe-delimited row format — use sanitizeForPromptCell on
       // user-controllable fields so a crafted `|` in a transaction name /
       // merchant name can't spoof fake columns downstream.
-      return results.map(t => `${t.date} | ${sanitizeForPromptCell(t.name)}${t.merchant_name ? ` (${sanitizeForPromptCell(t.merchant_name)})` : ""} | ${formatMoney(t.amount)} | ${categoryLabel(t.category)}`).join("\n");
+      // account_name is load-bearing for account-scoped questions (e.g.
+      // "what did I spend on my Apple Card?"): mirrors get_transactions's
+      // projection so the two tools return the same row shape. Falls back
+      // to "—" for the LEFT JOIN edge case of a missing account.
+      return results.map(t => `${t.date} | ${sanitizeForPromptCell(t.account_name) || "—"} | ${sanitizeForPromptCell(t.name)}${t.merchant_name ? ` (${sanitizeForPromptCell(t.merchant_name)})` : ""} | ${formatMoney(t.amount)} | ${categoryLabel(t.category)}`).join("\n");
     }
 
     case "categorize_transaction": {
@@ -692,15 +698,17 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       const MAX_MONTHS = 600;
       const MIN_FLOOR = 50;
 
-      // Sort debts by strategy. For avalanche, treat rate===null as -Infinity
-      // for sort (so null-rate debts fall to the bottom like getDebts's
-      // queries/index.ts ordering) — this keeps small unknown-rate retail
-      // cards from jumping ahead of legitimately-high-rate debts. The
-      // simulation loop still applies ASSUMED_UNKNOWN_APR to rows it does
-      // simulate; this sort change only affects ordering.
+      // Sort debts by strategy. For avalanche, treat rate===null using the
+      // SAME ASSUMED_UNKNOWN_APR the simulator itself applies to unknown-rate
+      // card-shaped debts. Ranking null-rate debts at 20% keeps the scheduling
+      // consistent with the simulation — a null-rate retail card sorts ahead
+      // of a 0% promo balance (matching effectiveRate ordering) instead of
+      // falling to the bottom behind legitimately-low-rate debts. This does
+      // not affect queries/index.ts getDebts display ordering, which stays
+      // APR-descending-with-nulls-last for the user-facing debt list.
       const sorted = [...d.debts].filter(debt => debt.balance > 0);
       if (strategy === "avalanche") {
-        sorted.sort((a, b) => (b.rate ?? -Infinity) - (a.rate ?? -Infinity));
+        sorted.sort((a, b) => (b.rate ?? ASSUMED_UNKNOWN_APR) - (a.rate ?? ASSUMED_UNKNOWN_APR));
       } else if (strategy === "snowball") {
         sorted.sort((a, b) => a.balance - b.balance);
       }
@@ -891,6 +899,16 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       }
 
       result += `\n\nTotal interest: ${formatMoney(totalInterest)}`;
+      // Hoisted reminder: when ANY debt was skipped (unknown APR/payment),
+      // always surface the "ask the user for APR/minimum" nudge — regardless
+      // of whether the simulated debts finished, got stuck, or produced no
+      // timeline at all. Previously this text only appeared on the
+      // (maxMonths>0 && !anyStuck && anySkipped) branch; when skips coexisted
+      // with a stuck simulation the model got the stuck message without the
+      // reminder to ask for the missing inputs.
+      if (anySkipped) {
+        result += ` | Additional debts above cannot be simulated; ask the user for their APR and minimum payment to include them.`;
+      }
       if (maxMonths > 0 && !anyStuck && !anySkipped) {
         const finalDate = new Date();
         finalDate.setMonth(finalDate.getMonth() + maxMonths);
@@ -898,14 +916,23 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       } else if (maxMonths > 0 && !anyStuck && anySkipped) {
         // Don't lie about "Debt-free by" when we couldn't simulate every
         // debt: the mortgage / unknown-APR loans are still outstanding on
-        // that date. Surface the partial finish date and explicitly remind
-        // the model to ask for the missing APRs/payments to complete the
-        // picture.
+        // that date. Surface the partial finish date; the reminder about
+        // missing APRs is emitted once by the hoisted `anySkipped` block
+        // above so we don't repeat it here.
         const finalDate = new Date();
         finalDate.setMonth(finalDate.getMonth() + maxMonths);
-        result += ` | Debt-free (simulated portion) by: ${finalDate.toISOString().slice(0, 7)} — additional debts above cannot be simulated; ask the user for their APR and minimum payment to include them.`;
+        result += ` | Debt-free (simulated portion) by: ${finalDate.toISOString().slice(0, 7)}`;
       } else if (anyStuck) {
         result += ` | Some debts cannot reach payoff at current payment levels — increase extra_monthly or confirm minimum payment.`;
+      } else if (simDebts.length === 0 && anySkipped) {
+        // All debts were skipped (e.g. all mortgages, all unknown-APR loans
+        // that didn't meet the card-shaped heuristic). maxMonths=0 and
+        // anyStuck=false so none of the branches above fire. Surface an
+        // explicit "nothing simulated" note so the Total interest: $0.00
+        // line doesn't look like a clean debt-free forecast — the hoisted
+        // `anySkipped` block already emitted the "ask for APR/minimum"
+        // reminder, don't repeat it here.
+        result += ` | No debts were simulated.`;
       }
       return result;
     }

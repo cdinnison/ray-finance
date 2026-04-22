@@ -11,24 +11,44 @@ const MAX_CHARS = 6000;
 
 /**
  * Sanitize a user-controlled string (merchant name, transaction description,
- * CSV field) before interpolating it into an LLM prompt. Strips control chars
- * (incl. newlines and tabs), collapses whitespace, and truncates to ~80 chars
- * so a crafted merchant name cannot inject instructions that smuggle tool
- * calls or rewrite the surrounding prompt. This is a defensive layer — the
- * primary guard is the explicit "data marker" preamble in the prompt itself.
+ * CSV field) before interpolating it into an LLM prompt. Strips both C0
+ * control chars + DEL (U+0000..U+001F, U+007F — includes newlines and tabs)
+ * AND Unicode bidi / format / zero-width characters (U+200B..U+200F,
+ * U+202A..U+202E, U+2060..U+206F, U+FEFF — RLO/LRO/PDF/ZWSP/ZWNBSP/etc.),
+ * then collapses whitespace and truncates to ~80 chars so a crafted merchant
+ * name cannot inject instructions that smuggle tool calls or rewrite the
+ * surrounding prompt. Control chars are what let a crafted payload break
+ * out of its data context; bidi/format chars can additionally manipulate how
+ * text renders in terminals and LLM contexts (e.g. RLO to reverse a "safe"
+ * suffix into a malicious prefix, ZWJ/ZWSP to hide instruction fragments
+ * from a casual reviewer while the model still reads them). This is a
+ * defensive layer — the primary guard is the explicit "data marker"
+ * preamble in the prompt itself.
  *
- * NOT delimiter-safe: this helper intentionally leaves `|`, `\t`, `,`, and
- * other in-band separators intact. If the output format uses one of those
- * as a field separator (e.g. the `|`-delimited rows in get_transactions and
- * search_transactions), use `sanitizeForPromptCell` instead to strip the
- * separator character so a user-controllable value can't spoof extra
- * columns.
+ * NOT delimiter-safe: this helper intentionally leaves `|`, `\t` (stripped
+ * as a C0 control, but not replaced with a distinct character), `,`, and
+ * other in-band separators intact beyond the control-char strip. If the
+ * output format uses `|` as a field separator (e.g. the `|`-delimited rows
+ * in get_transactions and search_transactions), use `sanitizeForPromptCell`
+ * instead to replace the pipe character so a user-controllable value can't
+ * spoof extra columns.
  */
 export function sanitizeForPrompt(s: string | null | undefined): string {
   if (s == null) return "";
-  // Strip C0 + DEL control chars (newlines, tabs, etc.) by replacing with a
-  // single space, then collapse runs of whitespace. Truncate to 80 chars.
-  const stripped = String(s).replace(/[\x00-\x1f\x7f]+/g, " ").replace(/\s+/g, " ").trim();
+  // Strip C0 + DEL control chars (newlines, tabs, etc.) AND Unicode bidi /
+  // format / zero-width characters by replacing with a single space, then
+  // collapse runs of whitespace. Truncate to 80 chars.
+  //
+  // The Unicode ranges below cover:
+  //   U+200B..U+200F  ZWSP, ZWNJ, ZWJ, LRM, RLM (zero-width + left/right marks)
+  //   U+202A..U+202E  LRE, RLE, PDF, LRO, RLO (bidi embedding overrides)
+  //   U+2060..U+206F  word joiner + invisible separators (incl. U+2066..U+2069
+  //                   isolate controls used in modern bidi smuggling)
+  //   U+FEFF          ZWNBSP (byte-order mark; also used as zero-width)
+  const stripped = String(s)
+    .replace(/[\x00-\x1f\x7f​-‏‪-‮⁠-⁯﻿]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   return stripped.length > 80 ? stripped.slice(0, 80) + "…" : stripped;
 }
 
@@ -50,17 +70,24 @@ export function sanitizeForPromptCell(s: string | null | undefined): string {
 }
 
 /**
- * Strip control characters from a user-controlled string without truncating.
- * Used for content interpolations where length matters (e.g. saved memories
- * injected into the system prompt), so the injection defense still runs but
- * legitimate long-form text isn't clipped. The control-char strip is the
- * load-bearing part of prompt-injection defense — a newline or tab in the
- * middle of "user" text is what lets a crafted payload break out of its
- * data context and be parsed by the model as a directive.
+ * Strip control characters and Unicode bidi / format / zero-width chars from
+ * a user-controlled string without truncating. Used for content
+ * interpolations where length matters (e.g. saved memories injected into
+ * the system prompt), so the injection defense still runs but legitimate
+ * long-form text isn't clipped. The control-char strip is the load-bearing
+ * part of prompt-injection defense — a newline or tab in the middle of
+ * "user" text is what lets a crafted payload break out of its data context
+ * and be parsed by the model as a directive. Bidi/format chars (RLO/LRO,
+ * ZWSP, ZWJ, isolate controls, BOM) can additionally manipulate how text
+ * renders in terminals and LLM contexts. Ranges mirror sanitizeForPrompt
+ * exactly — see that docstring for the full list.
  */
 export function stripControls(s: string | null | undefined): string {
   if (s == null) return "";
-  return String(s).replace(/[\x00-\x1f\x7f]+/g, " ").replace(/ {2,}/g, " ").trim();
+  return String(s)
+    .replace(/[\x00-\x1f\x7f​-‏‪-‮⁠-⁯﻿]+/g, " ")
+    .replace(/ {2,}/g, " ")
+    .trim();
 }
 
 export function computeInsights(db: Database.Database): string {
@@ -301,11 +328,16 @@ function buildUpcoming(db: Database.Database): string | null {
   }
 
   // Low balance warning. NULL-safe category filter (see apple-import.ts for
-  // the NULL-category rows this must include).
+  // the NULL-category rows this must include). Excludes LOAN_PAYMENTS
+  // alongside the transfer categories so Apple "Payment" rows (amount > 0
+  // on the checking-side mirror) don't inflate the 3-month expense
+  // average and trigger a spurious low-balance warning. Matches the
+  // expense-side convention everywhere else (SPENDING_EXCLUDED_CATEGORIES
+  // in queries/index.ts).
   const avgMonthlyExpenses = db.prepare(
     `SELECT COALESCE(SUM(amount), 0) / 3.0 as avg FROM transactions
      WHERE amount > 0 AND date > date('now', '-90 days') AND pending = 0
-     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN'))`
+     AND (category IS NULL OR category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS'))`
   ).get() as { avg: number };
 
   const lowAccounts = db.prepare(

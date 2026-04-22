@@ -1,5 +1,6 @@
 import type BetterSqlite3 from "libsql";
 import { sanitizeForPrompt } from "../ai/insights.js";
+import { formatMoney } from "../queries/index.js";
 type Database = BetterSqlite3.Database;
 
 export interface Alert {
@@ -29,7 +30,7 @@ export function generateAlerts(db: Database): Alert[] {
     alerts.push({
       type: "large_transaction",
       severity: "warning",
-      message: `Large charge: $${tx.amount} at ${sanitizeForPrompt(tx.merchant_name || tx.name)} (${sanitizeForPrompt(tx.account_name)})`,
+      message: `Large charge: ${formatMoney(tx.amount)} at ${sanitizeForPrompt(tx.merchant_name || tx.name)} (${sanitizeForPrompt(tx.account_name)})`,
       data: tx,
     });
   }
