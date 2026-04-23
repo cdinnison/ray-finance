@@ -35,6 +35,9 @@ export interface TransactionFilters {
   endDate?: string;
   category?: string;
   merchant?: string;
+  account?: string;
+  label?: string;
+  excludePending?: boolean;
   minAmount?: number;
   maxAmount?: number;
   limit?: number;
@@ -97,10 +100,10 @@ export function getNetWorth(db: Database): {
   };
 }
 
-export function getAccountBalances(db: Database): { name: string; balance: number; type: string }[] {
+export function getAccountBalances(db: Database): { name: string; balance: number; type: string; balance_limit: number | null }[] {
   return db
     .prepare(
-      `SELECT name, current_balance as balance, type FROM accounts
+      `SELECT name, current_balance as balance, type, balance_limit FROM accounts
        WHERE hidden = 0 ORDER BY type, current_balance DESC`
     )
     .all() as any[];
@@ -253,6 +256,17 @@ export function getTransactionsFiltered(
     conditions.push(`(merchant_name LIKE ? OR name LIKE ?)`);
     params.push(`%${filters.merchant}%`, `%${filters.merchant}%`);
   }
+  if (filters.account) {
+    conditions.push(`account_id IN (SELECT account_id FROM accounts WHERE name LIKE ?)`);
+    params.push(`%${filters.account}%`);
+  }
+  if (filters.label) {
+    conditions.push(`(label LIKE ? OR note LIKE ?)`);
+    params.push(`%${filters.label}%`, `%${filters.label}%`);
+  }
+  if (filters.excludePending) {
+    conditions.push(`pending = 0`);
+  }
   if (filters.minAmount !== undefined) {
     conditions.push(`amount >= ?`);
     params.push(filters.minAmount);
@@ -288,13 +302,23 @@ export function getIncome(db: Database, startDate: string, endDate: string): { s
 
 // --- Full-text search ---
 
-export function searchTransactions(db: Database, query: string, limit = 30): { transaction_id: string; name: string; merchant_name: string | null; amount: number; category: string; date: string }[] {
+export function searchTransactions(db: Database, query: string, limit = 30, account?: string): { transaction_id: string; name: string; merchant_name: string | null; amount: number; category: string; date: string }[] {
+  const q = `%${query}%`;
+  if (account) {
+    return db.prepare(
+      `SELECT transaction_id, name, merchant_name, amount, category, date
+       FROM transactions
+       WHERE (name LIKE ? OR merchant_name LIKE ? OR category LIKE ?)
+       AND account_id IN (SELECT account_id FROM accounts WHERE name LIKE ?)
+       ORDER BY date DESC LIMIT ?`
+    ).all(q, q, q, `%${account}%`, limit) as any[];
+  }
   return db.prepare(
     `SELECT transaction_id, name, merchant_name, amount, category, date
      FROM transactions
      WHERE (name LIKE ? OR merchant_name LIKE ? OR category LIKE ?)
      ORDER BY date DESC LIMIT ?`
-  ).all(`%${query}%`, `%${query}%`, `%${query}%`, limit) as any[];
+  ).all(q, q, q, limit) as any[];
 }
 
 // --- Cash flow analysis ---

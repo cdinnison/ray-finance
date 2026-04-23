@@ -456,6 +456,16 @@ export function getAchievements(db: Database): Achievement[] {
 }
 
 /**
+ * Get recent daily scores for trend analysis.
+ */
+export function getScoreTrend(db: Database, days = 30): { date: string; score: number; total_spend: number; zero_spend: boolean }[] {
+  const rows = db.prepare(
+    `SELECT date, score, total_spend, zero_spend FROM daily_scores ORDER BY date DESC LIMIT ?`
+  ).all(days) as { date: string; score: number; total_spend: number; zero_spend: number }[];
+  return rows.map(r => ({ ...r, zero_spend: r.zero_spend === 1 }));
+}
+
+/**
  * Get average score for current month.
  */
 export function getMonthAvgScore(db: Database): number | null {
