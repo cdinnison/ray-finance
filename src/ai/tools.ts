@@ -36,6 +36,9 @@ export const toolDefinitions: ToolDefinition[] = [
         end_date: { type: "string", description: "End date (YYYY-MM-DD). Defaults to today." },
         category: { type: "string", description: "Filter by category (e.g. FOOD_AND_DRINK, GENERAL_MERCHANDISE)" },
         merchant: { type: "string", description: "Filter by merchant name (partial match)" },
+        account: { type: "string", description: "Filter by account name (partial match, e.g. 'Free to Spend', 'Bills')" },
+        label: { type: "string", description: "Filter by transaction label or note (partial match)" },
+        include_pending: { type: "boolean", description: "Include pending transactions (default false)" },
         min_amount: { type: "number", description: "Minimum transaction amount" },
         max_amount: { type: "number", description: "Maximum transaction amount" },
         limit: { type: "number", description: "Max results to return (default 20)" },
@@ -45,11 +48,13 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: "get_spending_summary",
-    description: "Get spending breakdown by category for a time period",
+    description: "Get spending breakdown by category for a time period, optionally scoped to one account or merchant",
     input_schema: {
       type: "object" as const,
       properties: {
         period: { type: "string", description: "Period: this_month, last_month, last_30, last_90, or YYYY-MM-DD:YYYY-MM-DD", default: "this_month" },
+        account: { type: "string", description: "Filter by account name (partial match)" },
+        merchant: { type: "string", description: "Filter by merchant name (partial match)" },
       },
       required: [],
     },
@@ -143,6 +148,7 @@ export const toolDefinitions: ToolDefinition[] = [
       type: "object" as const,
       properties: {
         query: { type: "string", description: "Search query (matches name, merchant, or category)" },
+        account: { type: "string", description: "Filter by account name (partial match, e.g. 'Free to Spend', 'Bills')" },
         limit: { type: "number", description: "Max results (default 30)" },
       },
       required: ["query"],
@@ -327,6 +333,52 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ["match_field", "match_pattern", "target_category"],
     },
   },
+  {
+    name: "list_recat_rules",
+    description: "List all auto-recategorization rules with their IDs",
+    input_schema: { type: "object" as const, properties: {}, required: [] },
+  },
+  {
+    name: "delete_recat_rule",
+    description: "Delete an auto-recategorization rule by ID (use list_recat_rules first to find the ID)",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        id: { type: "number", description: "Rule ID to delete" },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "get_achievements",
+    description: "List unlocked achievements from the scoring system (most recent first)",
+    input_schema: { type: "object" as const, properties: {}, required: [] },
+  },
+  {
+    name: "get_score_trend",
+    description: "Get daily financial behavior score history for trend analysis",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        days: { type: "number", description: "Number of days of history (default 30)" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_investment_transactions",
+    description: "List investment buy/sell/dividend transactions from linked brokerage accounts",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        start_date: { type: "string", description: "Start date (YYYY-MM-DD). Defaults to 90 days ago." },
+        end_date: { type: "string", description: "End date (YYYY-MM-DD). Defaults to today." },
+        ticker: { type: "string", description: "Filter by ticker symbol (optional)" },
+        limit: { type: "number", description: "Max results (default 50)" },
+      },
+      required: [],
+    },
+  },
 ];
 
 export async function executeTool(db: Database.Database, toolName: string, toolInput: any): Promise<string> {
@@ -346,7 +398,15 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
     case "get_accounts": {
       const accounts = getAccountBalances(db);
       if (accounts.length === 0) return "No accounts linked yet.";
-      return accounts.map(a => `${a.name} (${a.type}): ${["credit", "loan"].includes(a.type) ? "-" : ""}${formatMoney(a.balance)}`).join("\n");
+      return accounts.map(a => {
+        const sign = ["credit", "loan"].includes(a.type) ? "-" : "";
+        let line = `${a.name} (${a.type}): ${sign}${formatMoney(a.balance)}`;
+        if (a.type === "credit" && a.balance_limit && a.balance_limit > 0) {
+          const pct = Math.round((Math.abs(a.balance) / a.balance_limit) * 100);
+          line += ` | ${pct}% of ${formatMoney(a.balance_limit)} limit`;
+        }
+        return line;
+      }).join("\n");
     }
 
     case "get_transactions": {
@@ -355,6 +415,9 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
         endDate: toolInput.end_date,
         category: toolInput.category,
         merchant: toolInput.merchant,
+        account: toolInput.account,
+        label: toolInput.label,
+        excludePending: !toolInput.include_pending,
         minAmount: toolInput.min_amount,
         maxAmount: toolInput.max_amount,
         limit: toolInput.limit,
@@ -367,15 +430,27 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       const period = toolInput.period || "this_month";
       const { resolvePeriod } = await import("../db/helpers.js");
       const { start, end } = resolvePeriod(period);
+      const extraConditions: string[] = [];
+      const extraParams: any[] = [];
+      if (toolInput.account) {
+        extraConditions.push(`account_id IN (SELECT account_id FROM accounts WHERE name LIKE ?)`);
+        extraParams.push(`%${toolInput.account}%`);
+      }
+      if (toolInput.merchant) {
+        extraConditions.push(`(merchant_name LIKE ? OR name LIKE ?)`);
+        extraParams.push(`%${toolInput.merchant}%`, `%${toolInput.merchant}%`);
+      }
+      const extraSql = extraConditions.length > 0 ? ` AND ${extraConditions.join(" AND ")}` : "";
       const rows = db.prepare(
         `SELECT category, SUM(amount) as total, COUNT(*) as count FROM transactions
          WHERE amount > 0 AND date BETWEEN ? AND ? AND pending = 0
-         AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')
+         AND category NOT IN ('TRANSFER_OUT', 'TRANSFER_IN', 'LOAN_PAYMENTS')${extraSql}
          GROUP BY category ORDER BY total DESC`
-      ).all(start, end) as { category: string; total: number; count: number }[];
-      if (rows.length === 0) return "No spending found for that period.";
+      ).all(start, end, ...extraParams) as { category: string; total: number; count: number }[];
+      const scope = [toolInput.account && `account "${toolInput.account}"`, toolInput.merchant && `merchant "${toolInput.merchant}"`].filter(Boolean).join(", ");
+      if (rows.length === 0) return `No spending found for that period${scope ? ` (${scope})` : ""}.`;
       const grandTotal = rows.reduce((s, r) => s + r.total, 0);
-      let result = `Spending ${start} to ${end}: ${formatMoney(grandTotal)} total\n\n`;
+      let result = `Spending ${start} to ${end}${scope ? ` (${scope})` : ""}: ${formatMoney(grandTotal)} total\n\n`;
       result += rows.map(r => `${categoryLabel(r.category)}: ${formatMoney(r.total)} (${r.count} transactions)`).join("\n");
       return result;
     }
@@ -447,12 +522,28 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
         `SELECT merchant_name, description, avg_amount, last_amount, frequency, last_date, stream_type
          FROM recurring WHERE is_active = 1 ORDER BY stream_type, avg_amount DESC`
       ).all() as { merchant_name: string | null; description: string; avg_amount: number; last_amount: number; frequency: string; last_date: string; stream_type: string }[];
-      if (rows.length === 0) return "No recurring transactions detected yet.";
-      return rows.map(r => {
-        const name = r.merchant_name || r.description;
-        const arrow = r.stream_type === "inflow" ? "+" : "-";
-        return `${arrow} ${name}: ${formatMoney(Math.abs(r.avg_amount))} (${r.frequency.toLowerCase()}, last: ${r.last_date})`;
-      }).join("\n");
+      const manual = db.prepare(
+        `SELECT name, amount, day_of_month, type FROM recurring_bills ORDER BY amount DESC`
+      ).all() as { name: string; amount: number; day_of_month: number | null; type: string | null }[];
+      if (rows.length === 0 && manual.length === 0) return "No recurring transactions detected yet.";
+      const lines: string[] = [];
+      if (rows.length > 0) {
+        lines.push("Detected (Plaid):");
+        for (const r of rows) {
+          const name = r.merchant_name || r.description;
+          const arrow = r.stream_type === "inflow" ? "+" : "-";
+          lines.push(`${arrow} ${name}: ${formatMoney(Math.abs(r.avg_amount))} (${r.frequency.toLowerCase()}, last: ${r.last_date})`);
+        }
+      }
+      if (manual.length > 0) {
+        if (lines.length > 0) lines.push("");
+        lines.push("Manual bills:");
+        for (const m of manual) {
+          const day = m.day_of_month ? ` (day ${m.day_of_month})` : "";
+          lines.push(`- ${m.name}: ${formatMoney(m.amount)}${day}${m.type ? ` [${m.type}]` : ""}`);
+        }
+      }
+      return lines.join("\n");
     }
 
     case "get_alerts": {
@@ -487,7 +578,7 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
     }
 
     case "search_transactions": {
-      const results = searchTransactions(db, toolInput.query, toolInput.limit);
+      const results = searchTransactions(db, toolInput.query, toolInput.limit, toolInput.account);
       if (results.length === 0) return `No transactions found matching "${toolInput.query}".`;
       return results.map(t => `${t.date} | ${t.name}${t.merchant_name ? ` (${t.merchant_name})` : ""} | ${formatMoney(t.amount)} | ${categoryLabel(t.category)}`).join("\n");
     }
@@ -718,6 +809,72 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
         `INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label) VALUES (?, ?, ?, ?, ?)`
       ).run(toolInput.match_field, toolInput.match_pattern, toolInput.target_category, toolInput.target_subcategory || null, toolInput.label || null);
       return `Recategorization rule added: ${toolInput.match_field} matching "${toolInput.match_pattern}" → ${categoryLabel(toolInput.target_category)}`;
+    }
+
+    case "list_recat_rules": {
+      const rules = db.prepare(
+        `SELECT id, match_field, match_pattern, target_category, target_subcategory, label FROM recategorization_rules ORDER BY id`
+      ).all() as { id: number; match_field: string; match_pattern: string; target_category: string; target_subcategory: string | null; label: string | null }[];
+      if (rules.length === 0) return "No recategorization rules yet.";
+      return rules.map(r => {
+        let line = `#${r.id}: ${r.match_field} matching "${r.match_pattern}" → ${categoryLabel(r.target_category)}`;
+        if (r.target_subcategory) line += ` / ${r.target_subcategory}`;
+        if (r.label) line += ` [label: ${r.label}]`;
+        return line;
+      }).join("\n");
+    }
+
+    case "delete_recat_rule": {
+      const info = db.prepare(`DELETE FROM recategorization_rules WHERE id = ?`).run(toolInput.id);
+      if (info.changes === 0) return `Rule #${toolInput.id} not found.`;
+      return `Rule #${toolInput.id} deleted.`;
+    }
+
+    case "get_achievements": {
+      const { getAchievements } = await import("../scoring/index.js");
+      const rows = getAchievements(db);
+      if (rows.length === 0) return "No achievements unlocked yet.";
+      return rows.map(a => `${a.name}${a.description ? ` — ${a.description}` : ""} (${a.unlocked_at})`).join("\n");
+    }
+
+    case "get_score_trend": {
+      const { getScoreTrend } = await import("../scoring/index.js");
+      const days = toolInput.days || 30;
+      const rows = getScoreTrend(db, days);
+      if (rows.length === 0) return "No score history yet.";
+      const avg = Math.round(rows.reduce((s, r) => s + r.score, 0) / rows.length);
+      const zeroDays = rows.filter(r => r.zero_spend).length;
+      let result = `Score trend (${rows.length} days): avg ${avg}/100, ${zeroDays} zero-spend days\n\n`;
+      result += rows.map(r => `${r.date}: ${r.score}/100 | ${formatMoney(r.total_spend)}${r.zero_spend ? " (zero-spend)" : ""}`).join("\n");
+      return result;
+    }
+
+    case "get_investment_transactions": {
+      const now = new Date();
+      const start = toolInput.start_date || new Date(now.getFullYear(), now.getMonth() - 3, now.getDate()).toISOString().slice(0, 10);
+      const end = toolInput.end_date || now.toISOString().slice(0, 10);
+      const limit = toolInput.limit || 50;
+      const conditions: string[] = ["it.date BETWEEN ? AND ?"];
+      const params: any[] = [start, end];
+      if (toolInput.ticker) {
+        conditions.push(`s.ticker LIKE ?`);
+        params.push(`%${toolInput.ticker}%`);
+      }
+      const rows = db.prepare(
+        `SELECT it.date, it.name, it.quantity, it.amount, it.price, it.type, it.subtype, s.ticker, a.name as account_name
+         FROM investment_transactions it
+         LEFT JOIN securities s ON it.security_id = s.security_id
+         LEFT JOIN accounts a ON it.account_id = a.account_id
+         WHERE ${conditions.join(" AND ")}
+         ORDER BY it.date DESC LIMIT ?`
+      ).all(...params, limit) as { date: string; name: string; quantity: number | null; amount: number; price: number | null; type: string | null; subtype: string | null; ticker: string | null; account_name: string }[];
+      if (rows.length === 0) return `No investment transactions from ${start} to ${end}.`;
+      return rows.map(r => {
+        const tickerStr = r.ticker ? `${r.ticker} ` : "";
+        const qtyStr = r.quantity ? ` | ${r.quantity} @ ${r.price ? formatMoney(r.price) : "?"}` : "";
+        const typeStr = r.subtype || r.type || "";
+        return `${r.date} | ${tickerStr}${r.name}${qtyStr} | ${formatMoney(r.amount)} [${typeStr}] (${r.account_name})`;
+      }).join("\n");
     }
 
     default:
