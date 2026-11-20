@@ -143,16 +143,27 @@
         }
         const { link_token } = await res.json();
 
-        // Persist link_token + session for OAuth redirect flow (Chase, Capital One, etc.)
+        // Persist link_token + session in tab-scoped sessionStorage for OAuth redirect flow (Chase, Capital One, etc.)
         try {
-          localStorage.setItem('ray_plaid_link', JSON.stringify({ link_token, session_id: sessionId }));
+          sessionStorage.setItem('ray_plaid_link', JSON.stringify({ link_token, session_id: sessionId }));
         } catch {}
 
         linkHandler = Plaid.create({
           token: link_token,
           onSuccess: async (publicToken, metadata) => {
-            document.getElementById('connect-view').innerHTML = '<div class="spinner"></div><h1>Linking</h1><p>Syncing ' + (metadata.institution?.name || 'account') + '...</p>';
-            document.getElementById('connect-view').style.display = 'block';
+            const connectView = document.getElementById('connect-view');
+            const spinner = document.createElement('div');
+            spinner.className = 'spinner';
+            const heading = document.createElement('h1');
+            heading.textContent = 'Linking';
+            const status = document.createElement('p');
+            status.textContent = 'Syncing ' + (metadata.institution?.name || 'account') + '...';
+            const errBox = document.createElement('div');
+            errBox.id = 'error';
+            errBox.className = 'error';
+            errBox.style.display = 'none';
+            connectView.replaceChildren(spinner, heading, status, errBox);
+            connectView.style.display = 'block';
             try {
               const resp = await fetch('/api/exchange', {
                 method: 'POST',
@@ -170,25 +181,30 @@
                 err.code = data.error_code;
                 throw err;
               }
-              try { localStorage.removeItem('ray_plaid_link'); } catch {}
+              try { sessionStorage.removeItem('ray_plaid_link'); } catch {}
               const result = await resp.json();
               document.getElementById('connect-view').style.display = 'none';
               document.getElementById('success-view').style.display = 'block';
               const instName = result.institution_name || metadata.institution?.name;
               if (instName) {
                 const titleEl = document.getElementById('success-title');
-                titleEl.innerHTML = titleEl.querySelector('svg').outerHTML + instName + ' Connected';
+                const checkSvg = titleEl.querySelector('svg');
+                titleEl.replaceChildren();
+                if (checkSvg) titleEl.appendChild(checkSvg);
+                titleEl.appendChild(document.createTextNode(instName + ' Connected'));
               }
-              if (result.institution_logo) {
+              if (typeof result.institution_logo === 'string' && /^[A-Za-z0-9+/=\s]+$/.test(result.institution_logo)) {
                 const logoEl = document.getElementById('institution-logo');
-                logoEl.src = 'data:image/png;base64,' + result.institution_logo;
+                logoEl.src = 'data:image/png;base64,' + result.institution_logo.replace(/\s+/g, '');
                 logoEl.style.display = 'inline-block';
               }
             } catch (e) {
+              try { sessionStorage.removeItem('ray_plaid_link'); } catch {}
               showError(e.message || 'Failed to link account. Please try again with "ray link".', e.code);
             }
           },
           onExit: (err) => {
+            try { sessionStorage.removeItem('ray_plaid_link'); } catch {}
             document.getElementById('connect-view').style.display = 'block';
             if (err) showError('Connection cancelled. You can try again.');
           },
@@ -200,25 +216,40 @@
       }
     }
 
-    function hintForCode(code) {
+    function appendHintForCode(container, code) {
       switch (code) {
         case 'INVALID_PRODUCT':
         case 'PRODUCTS_NOT_SUPPORTED':
-        case 'PRODUCT_NOT_READY':
-          return 'Your Plaid account isn\'t approved for this product. Request access at <a href="https://dashboard.plaid.com" target="_blank" rel="noopener">dashboard.plaid.com</a> → Account → Products.';
+        case 'PRODUCT_NOT_READY': {
+          container.appendChild(document.createElement('br'));
+          container.appendChild(document.createElement('br'));
+          container.appendChild(document.createTextNode("Your Plaid account isn't approved for this product. Request access at "));
+          const link = document.createElement('a');
+          link.href = 'https://dashboard.plaid.com';
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = 'dashboard.plaid.com';
+          container.appendChild(link);
+          container.appendChild(document.createTextNode(' → Account → Products.'));
+          break;
+        }
         case 'INVALID_API_KEYS':
-          return 'Check your PLAID_CLIENT_ID and PLAID_SECRET in ~/.ray/config.json.';
+          container.appendChild(document.createElement('br'));
+          container.appendChild(document.createElement('br'));
+          container.appendChild(document.createTextNode('Check your PLAID_CLIENT_ID and PLAID_SECRET in ~/.ray/config.json.'));
+          break;
         case 'INVALID_FIELD':
-          return 'If your bank uses OAuth (Chase, Capital One), set PLAID_REDIRECT_URI and register the same URL in your Plaid dashboard.';
-        default:
-          return '';
+          container.appendChild(document.createElement('br'));
+          container.appendChild(document.createElement('br'));
+          container.appendChild(document.createTextNode('If your bank uses OAuth (Chase, Capital One), set PLAID_REDIRECT_URI and register the same URL in your Plaid dashboard.'));
+          break;
       }
     }
 
     function showError(msg, code) {
       const el = document.getElementById('error');
-      const hint = hintForCode(code);
-      el.innerHTML = msg.replace(/</g, '&lt;') + (hint ? '<br><br>' + hint : '');
+      el.replaceChildren(document.createTextNode(String(msg || 'An error occurred.')));
+      appendHintForCode(el, code);
       el.style.display = 'block';
     }
 

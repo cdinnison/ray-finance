@@ -8,7 +8,8 @@ let singleDb: Database.Database | null = null;
 
 function openDb(dbPath: string, encryptionKey?: string): Database.Database {
   const dir = dirname(dbPath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { chmodSync(dir, 0o700); } catch {}
 
   const opts: Record<string, string> = {};
   if (encryptionKey) {
@@ -31,7 +32,11 @@ function openDb(dbPath: string, encryptionKey?: string): Database.Database {
 
   db.pragma("foreign_keys = ON");
   migrate(db);
-  try { chmodSync(dbPath, 0o600); } catch {}
+  for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+    if (existsSync(path)) {
+      try { chmodSync(path, 0o600); } catch {}
+    }
+  }
   return db;
 }
 
