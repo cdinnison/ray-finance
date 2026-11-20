@@ -45,4 +45,43 @@ describe("BridgeClient", () => {
 
     await expect(client.createConnectSession("bridge-access-token")).rejects.toBeInstanceOf(BridgeApiError);
   });
+
+  it("refuses to follow off-origin or plaintext http pagination next_uri values", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        resources: [{ id: 1 }],
+        pagination: { next_uri: "https://attacker.example/steal" },
+      }), { status: 200 }),
+    );
+
+    const client = new BridgeClient(fetchMock as unknown as typeof fetch, "client-id", "client-secret");
+    await expect(client.listTransactions("bridge-access-token")).rejects.toThrow(/untrusted origin/i);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const httpFetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        resources: [{ id: 1 }],
+        pagination: { next_uri: "http://api.bridgeapi.io/v3/aggregation/transactions?after=1" },
+      }), { status: 200 }),
+    );
+    const httpClient = new BridgeClient(httpFetchMock as unknown as typeof fetch, "client-id", "client-secret");
+    await expect(httpClient.listTransactions("bridge-access-token")).rejects.toThrow(/untrusted origin/i);
+    expect(httpFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("detects pagination loops and URL-encodes path parameters", async () => {
+    const loopFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        resources: [{ id: 1 }],
+        pagination: { next_uri: "/v3/aggregation/transactions" },
+      }), { status: 200 }),
+    );
+    const loopClient = new BridgeClient(loopFetch as unknown as typeof fetch, "client-id", "client-secret");
+    await expect(loopClient.listTransactions("bridge-access-token")).rejects.toThrow(/loop/i);
+
+    const itemFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "1" }), { status: 200 }));
+    const itemClient = new BridgeClient(itemFetch as unknown as typeof fetch, "client-id", "client-secret");
+    await itemClient.getItem("tok", "../admin");
+    expect(itemFetch.mock.calls[0][0]).toBe("https://api.bridgeapi.io/v3/aggregation/items/..%2Fadmin");
+  });
 });

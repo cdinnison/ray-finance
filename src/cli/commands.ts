@@ -11,7 +11,7 @@ import { getLatestScore, getAchievements, getMonthlySavings, calculateDailyScore
 import { generateAlerts } from "../alerts/index.js";
 import { runDailySync, snapshotNetWorth } from "../daily-sync.js";
 import { startLinkServer } from "../server.js";
-import { addManualAccount, getManualAccounts, removeManualAccount, scrapeRedfinEstimate } from "../property.js";
+import { addManualAccount, getManualAccounts, removeManualAccount, scrapeRedfinEstimate, isValidRedfinUrl } from "../property.js";
 import { applyRecategorizationRules } from "../recategorization.js";
 import {
   runAppleImport,
@@ -221,19 +221,24 @@ export async function runLink(): Promise<void> {
 
     const listingUrl = (await ask(`${dim("Paste a Redfin URL (or press Enter to skip):")} `)).trim();
     if (listingUrl) {
-      const name = (await ask(`${dim("Name (e.g. Primary Residence):")} `)).trim() || "Primary Residence";
-      rl.close();
-      const propSpinner = ora("Fetching home value...").start();
-      try {
-        const value = await scrapeRedfinEstimate(listingUrl);
-        if (value) {
-          addManualAccount(db, name, "asset", value, listingUrl);
-          propSpinner.succeed(`${name}: ${rawFormatMoney(value)} — updates automatically on sync.`);
-        } else {
-          propSpinner.fail("Could not determine home value from that URL. Try 'ray add' later.");
+      if (!isValidRedfinUrl(listingUrl)) {
+        rl.close();
+        console.log(chalk.yellow("  Only HTTPS redfin.com URLs are supported. Try 'ray add' later."));
+      } else {
+        const name = (await ask(`${dim("Name (e.g. Primary Residence):")} `)).trim() || "Primary Residence";
+        rl.close();
+        const propSpinner = ora("Fetching home value...").start();
+        try {
+          const value = await scrapeRedfinEstimate(listingUrl);
+          if (value) {
+            addManualAccount(db, name, "asset", value, listingUrl);
+            propSpinner.succeed(`${name}: ${rawFormatMoney(value)} — updates automatically on sync.`);
+          } else {
+            propSpinner.fail("Could not determine home value from that URL. Try 'ray add' later.");
+          }
+        } catch {
+          propSpinner.fail("Failed to fetch home value. Try 'ray add' later.");
         }
-      } catch {
-        propSpinner.fail("Failed to fetch home value. Try 'ray add' later.");
       }
     } else {
       rl.close();
@@ -559,24 +564,19 @@ export async function runAdd(): Promise<void> {
 
     const url = redfin.trim();
     if (url) {
-      try {
-        const parsed = new URL(url);
-        if (!parsed.hostname.includes("redfin")) {
-          console.log(chalk.yellow("  Only Redfin URLs are supported."));
+      if (!isValidRedfinUrl(url)) {
+        console.log(chalk.yellow("  Only HTTPS redfin.com URLs are supported."));
+      } else {
+        listingUrl = url;
+        const spinner = ora("Fetching Redfin Estimate...").start();
+        const scraped = await scrapeRedfinEstimate(url);
+        if (scraped) {
+          finalBalance = scraped;
+          spinner.succeed(`Redfin Estimate: ${chalk.bold(rawFormatMoney(scraped))} ${dim("— updates on each sync")}`);
         } else {
-          listingUrl = url;
-          const spinner = ora("Fetching Redfin Estimate...").start();
-          const scraped = await scrapeRedfinEstimate(url);
-          if (scraped) {
-            finalBalance = scraped;
-            spinner.succeed(`Redfin Estimate: ${chalk.bold(rawFormatMoney(scraped))} ${dim("— updates on each sync")}`);
-          } else {
-            spinner.warn("Could not fetch estimate.");
-            listingUrl = undefined;
-          }
+          spinner.warn("Could not fetch estimate.");
+          listingUrl = undefined;
         }
-      } catch {
-        console.log(chalk.yellow("  Invalid URL."));
       }
     }
   }

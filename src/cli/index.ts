@@ -246,12 +246,16 @@ program
         return;
       }
       const { url } = await resp.json() as { url: string };
-      // Only open URLs from trusted domains
+      // Only open HTTPS URLs from exact trusted domains
       const parsed = new URL(url);
-      if (!parsed.hostname.endsWith("stripe.com") && !parsed.hostname.endsWith("rayfinance.app")) {
+      const host = parsed.hostname.toLowerCase();
+      const isTrustedHost =
+        host === "stripe.com" || host.endsWith(".stripe.com") ||
+        host === "rayfinance.app" || host.endsWith(".rayfinance.app");
+      if (parsed.protocol !== "https:" || !isTrustedHost) {
         console.error("Unexpected billing URL.");
       } else {
-        await open(url);
+        await open(parsed.toString());
       }
     } catch (err) {
       console.error("Could not open billing portal:", (err as Error).message);

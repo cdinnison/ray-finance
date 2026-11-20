@@ -1,7 +1,10 @@
 import { config } from "../../config.js";
 
 const BRIDGE_BASE_URL = "https://api.bridgeapi.io";
+const BRIDGE_ORIGIN = new URL(BRIDGE_BASE_URL).origin;
 const BRIDGE_VERSION = "2025-01-15";
+const MAX_PAGINATION_PAGES = 500;
+const REQUEST_TIMEOUT_MS = 30_000;
 
 export interface BridgeUser {
   id?: string | number;
@@ -112,9 +115,11 @@ export class BridgeClient {
   }
 
   private normalizePath(path: string): string {
-    if (path.startsWith("http://") || path.startsWith("https://")) return path;
-    if (path.startsWith("/")) return `${BRIDGE_BASE_URL}${path}`;
-    return `${BRIDGE_BASE_URL}/${path}`;
+    const resolved = new URL(path, BRIDGE_BASE_URL);
+    if (resolved.protocol !== "https:" || resolved.origin !== BRIDGE_ORIGIN) {
+      throw new Error(`Refusing to send Bridge credentials to untrusted origin: ${resolved.origin}`);
+    }
+    return resolved.toString();
   }
 
   private async request<T>(
@@ -129,6 +134,7 @@ export class BridgeClient {
       method: options.method || (options.body ? "POST" : "GET"),
       headers: this.buildHeaders(options.accessToken, options.body !== undefined),
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
 
     const text = await response.text();
@@ -144,10 +150,21 @@ export class BridgeClient {
 
   private async paginate<T>(path: string, accessToken: string): Promise<T[]> {
     const resources: T[] = [];
+    const seen = new Set<string>();
     let nextPath: string | null = path;
+    let pages = 0;
 
     while (nextPath) {
-      const data: BridgeCollectionResponse<T> = await this.request<BridgeCollectionResponse<T>>(nextPath, { accessToken });
+      const normalized = this.normalizePath(nextPath);
+      if (seen.has(normalized)) {
+        throw new Error("Bridge pagination loop detected.");
+      }
+      if (++pages > MAX_PAGINATION_PAGES) {
+        throw new Error(`Bridge pagination exceeded maximum page limit (${MAX_PAGINATION_PAGES}).`);
+      }
+      seen.add(normalized);
+
+      const data: BridgeCollectionResponse<T> = await this.request<BridgeCollectionResponse<T>>(normalized, { accessToken });
       resources.push(...(data.resources || []));
 
       const nextUri: string | null | undefined = data.pagination?.next_uri;
@@ -216,7 +233,7 @@ export class BridgeClient {
   }
 
   async getItem(accessToken: string, itemId: string): Promise<BridgeItem> {
-    return this.request<BridgeItem>(`/v3/aggregation/items/${itemId}`, { accessToken });
+    return this.request<BridgeItem>(`/v3/aggregation/items/${encodeURIComponent(itemId)}`, { accessToken });
   }
 
   async listAccounts(accessToken: string): Promise<BridgeAccount[]> {
@@ -231,6 +248,6 @@ export class BridgeClient {
   }
 
   async getProvider(providerId: string | number): Promise<BridgeProviderInfo> {
-    return this.request<BridgeProviderInfo>(`/v3/providers/${providerId}`);
+    return this.request<BridgeProviderInfo>(`/v3/providers/${encodeURIComponent(String(providerId))}`);
   }
 }

@@ -1,9 +1,12 @@
-import { writeFileSync, readFileSync, existsSync } from "fs";
+import { writeFileSync, readFileSync, existsSync, chmodSync } from "fs";
 import { resolve } from "path";
 import { homedir } from "os";
 import chalk from "chalk";
 import { getDb } from "../db/connection.js";
 import { readContext, writeContext } from "../ai/context.js";
+import { isValidRedfinUrl } from "../property.js";
+
+const ALLOWED_RECAT_FIELDS = new Set(["name", "merchant_name", "category", "subcategory"]);
 
 interface BackupData {
   version: 1;
@@ -34,6 +37,7 @@ export function runExport(outputPath?: string): void {
   };
 
   writeFileSync(dest, JSON.stringify(backup, null, 2) + "\n", { mode: 0o600 });
+  try { chmodSync(dest, 0o600); } catch {}
   console.log(chalk.green(`\nBackup saved to ${dest}`));
   console.log(chalk.dim(`  ${backup.memories.length} memories, ${backup.goals.length} goals, ${backup.budgets.length} budgets, ${backup.recat_rules.length} rules`));
   console.log(chalk.dim(`  Context: ${backup.context.length} chars`));
@@ -58,15 +62,22 @@ export function runImport(inputPath: string): void {
     process.exit(1);
   }
 
-  if (!backup.version || backup.version !== 1) {
+  if (!backup || typeof backup !== "object" || backup.version !== 1) {
     console.error(chalk.red("Unsupported backup version."));
     process.exit(1);
   }
 
+  const memories = Array.isArray(backup.memories) ? backup.memories : [];
+  const goals = Array.isArray(backup.goals) ? backup.goals : [];
+  const budgets = Array.isArray(backup.budgets) ? backup.budgets : [];
+  const recatRules = Array.isArray(backup.recat_rules) ? backup.recat_rules : [];
+  const settings = Array.isArray(backup.settings) ? backup.settings : [];
+  const milestones = Array.isArray(backup.milestones) ? backup.milestones : [];
+
   const db = getDb();
 
   // Restore context.md
-  if (backup.context) {
+  if (typeof backup.context === "string" && backup.context.length > 0) {
     writeContext(backup.context);
   }
 
@@ -74,7 +85,8 @@ export function runImport(inputPath: string): void {
   const insertMemory = db.prepare(
     "INSERT INTO memories (content, category) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM memories WHERE content = ? AND category = ?)"
   );
-  for (const m of backup.memories) {
+  for (const m of memories) {
+    if (!m || typeof m.content !== "string" || typeof m.category !== "string") continue;
     insertMemory.run(m.content, m.category, m.content, m.category);
   }
 
@@ -83,9 +95,12 @@ export function runImport(inputPath: string): void {
   const insertGoal = db.prepare(
     "INSERT INTO goals (name, target_amount, current_amount, target_date, status) VALUES (?, ?, ?, ?, ?)"
   );
-  for (const g of backup.goals) {
+  for (const g of goals) {
+    if (!g || typeof g.name !== "string" || typeof g.target_amount !== "number" || !Number.isFinite(g.target_amount)) continue;
+    const currentAmount = typeof g.current_amount === "number" && Number.isFinite(g.current_amount) ? g.current_amount : 0;
+    const status = typeof g.status === "string" ? g.status : "active";
     if (!existingGoal.get(g.name)) {
-      insertGoal.run(g.name, g.target_amount, g.current_amount, g.target_date ?? g.deadline ?? null, g.status);
+      insertGoal.run(g.name, g.target_amount, currentAmount, g.target_date ?? g.deadline ?? null, status);
     }
   }
 
@@ -93,51 +108,70 @@ export function runImport(inputPath: string): void {
   const insertBudget = db.prepare(
     "INSERT INTO budgets (category, monthly_limit, period) VALUES (?, ?, ?) ON CONFLICT(category, period) DO UPDATE SET monthly_limit = excluded.monthly_limit"
   );
-  for (const b of backup.budgets) {
-    insertBudget.run(b.category, b.monthly_limit, b.period);
+  for (const b of budgets) {
+    if (!b || typeof b.category !== "string" || typeof b.monthly_limit !== "number" || !Number.isFinite(b.monthly_limit)) continue;
+    const period = typeof b.period === "string" && b.period ? b.period : "monthly";
+    insertBudget.run(b.category, b.monthly_limit, period);
   }
 
   // Restore recat rules (skip exact duplicates, including target_subcategory).
-  // Empty / whitespace-only match_patterns are rejected — a backup payload
-  // carrying one is either corrupt or from a pre-validation era; silently
-  // persisting would mass-rewrite on the next sync (empty pattern with a
-  // future wildcard-escape layer) or create a dead rule (empty pattern
-  // under pass-through LIKE). Either way, not worth preserving.
+  // Reject unknown match_fields and empty / whitespace-only match_patterns.
   const existingRule = db.prepare(
     "SELECT 1 FROM recategorization_rules WHERE match_field = ? AND match_pattern = ? AND target_category = ? AND COALESCE(target_subcategory, '') = COALESCE(?, '')"
   );
   const insertRule = db.prepare("INSERT INTO recategorization_rules (match_field, match_pattern, target_category, target_subcategory, label) VALUES (?, ?, ?, ?, ?)");
-  let skippedEmpty = 0;
-  for (const r of backup.recat_rules) {
-    if (typeof r.match_pattern !== "string" || r.match_pattern.trim() === "") {
-      skippedEmpty++;
+  let skippedInvalidRules = 0;
+  for (const r of recatRules) {
+    if (
+      !r ||
+      typeof r.match_field !== "string" ||
+      !ALLOWED_RECAT_FIELDS.has(r.match_field) ||
+      typeof r.match_pattern !== "string" ||
+      r.match_pattern.trim() === "" ||
+      typeof r.target_category !== "string" ||
+      r.target_category.trim() === ""
+    ) {
+      skippedInvalidRules++;
       continue;
     }
-    if (!existingRule.get(r.match_field, r.match_pattern, r.target_category, r.target_subcategory)) {
-      insertRule.run(r.match_field, r.match_pattern, r.target_category, r.target_subcategory, r.label);
+    if (!existingRule.get(r.match_field, r.match_pattern, r.target_category, r.target_subcategory ?? null)) {
+      insertRule.run(r.match_field, r.match_pattern, r.target_category, r.target_subcategory ?? null, r.label ?? null);
     }
   }
-  if (skippedEmpty > 0) {
-    console.warn(chalk.yellow(`  Skipped ${skippedEmpty} recat rule(s) with empty match_pattern.`));
+  if (skippedInvalidRules > 0) {
+    console.warn(chalk.yellow(`  Skipped ${skippedInvalidRules} invalid recat rule(s).`));
   }
 
-  // Restore settings
+  // Restore settings (validate listing_url:* entries to prevent SSRF on sync)
   const insertSetting = db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
-  for (const s of backup.settings) {
+  let skippedInvalidSettings = 0;
+  for (const s of settings) {
+    if (!s || typeof s.key !== "string" || typeof s.value !== "string") {
+      skippedInvalidSettings++;
+      continue;
+    }
+    if (s.key.startsWith("listing_url:") && !isValidRedfinUrl(s.value)) {
+      skippedInvalidSettings++;
+      continue;
+    }
     insertSetting.run(s.key, s.value);
+  }
+  if (skippedInvalidSettings > 0) {
+    console.warn(chalk.yellow(`  Skipped ${skippedInvalidSettings} invalid setting(s).`));
   }
 
   // Restore milestones (skip if name already exists)
   const existingMilestone = db.prepare("SELECT 1 FROM milestones WHERE name = ?");
   const insertMilestone = db.prepare("INSERT INTO milestones (name, target_date, monthly_savings, description) VALUES (?, ?, ?, ?)");
-  for (const m of backup.milestones) {
+  for (const m of milestones) {
+    if (!m || typeof m.name !== "string") continue;
     if (!existingMilestone.get(m.name)) {
-      insertMilestone.run(m.name, m.target_date, m.monthly_savings, m.description);
+      insertMilestone.run(m.name, m.target_date ?? null, m.monthly_savings ?? null, m.description ?? null);
     }
   }
 
   console.log(chalk.green(`\nBackup restored from ${inputPath}`));
-  console.log(chalk.dim(`  ${backup.memories.length} memories, ${backup.goals.length} goals, ${backup.budgets.length} budgets, ${backup.recat_rules.length} rules`));
+  console.log(chalk.dim(`  ${memories.length} memories, ${goals.length} goals, ${budgets.length} budgets, ${recatRules.length} rules`));
   console.log(chalk.dim(`\nNext steps:`));
   console.log(chalk.dim(`  1. Run 'ray link' to re-connect your bank accounts`));
   console.log(chalk.dim(`  2. Run 'ray sync' to pull transactions`));

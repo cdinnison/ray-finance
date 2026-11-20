@@ -81,10 +81,14 @@ export async function runSetup(): Promise<void> {
         });
         const { url } = await resp.json() as { url: string };
         const parsed = new URL(url);
-        if (!parsed.hostname.endsWith("stripe.com") && !parsed.hostname.endsWith("rayfinance.app")) {
+        const host = parsed.hostname.toLowerCase();
+        const isTrustedHost =
+          host === "stripe.com" || host.endsWith(".stripe.com") ||
+          host === "rayfinance.app" || host.endsWith(".rayfinance.app");
+        if (parsed.protocol !== "https:" || !isTrustedHost) {
           console.log(dim(`  Unexpected checkout URL. Visit https://rayfinance.app to subscribe.\n`));
         } else {
-          await open(url);
+          await open(parsed.toString());
         }
       } catch {
         console.log(dim(`  Could not open checkout automatically.`));
@@ -386,7 +390,7 @@ export async function runSetup(): Promise<void> {
 
   // Ensure data directory exists
   const dbDir = dirname(config.dbPath);
-  if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
+  if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true, mode: 0o700 });
 
   // Initialize DB
   const { getDb } = await import("../db/connection.js");

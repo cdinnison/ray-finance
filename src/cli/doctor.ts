@@ -1,5 +1,5 @@
 import { existsSync, statSync } from "fs";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { platform, homedir } from "os";
 import { resolve } from "path";
 import chalk from "chalk";
@@ -37,7 +37,7 @@ function isSyncScheduleInstalled(): boolean {
     return existsSync(plistPath);
   }
   try {
-    const crontab = execSync("crontab -l 2>/dev/null", { encoding: "utf-8" });
+    const crontab = execFileSync("crontab", ["-l"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
     return crontab.includes("ray-finance daily sync");
   } catch {
     return false;
@@ -74,10 +74,18 @@ export async function runDoctor(): Promise<void> {
     let detail = `OpenAI-compatible (${config.openaiCompatibleBaseURL || "no base URL"})`;
     let status: Check["status"] = "ok";
 
-    // Check Ollama reachability for localhost URLs
-    if (config.openaiCompatibleBaseURL.includes("localhost") || config.openaiCompatibleBaseURL.includes("127.0.0.1")) {
+    // Check Ollama reachability only for verified loopback URLs
+    let parsedBaseUrl: URL | null = null;
+    try {
+      parsedBaseUrl = new URL(config.openaiCompatibleBaseURL);
+    } catch {}
+    const isLoopback = parsedBaseUrl !== null &&
+      (parsedBaseUrl.protocol === "http:" || parsedBaseUrl.protocol === "https:") &&
+      (parsedBaseUrl.hostname === "localhost" || parsedBaseUrl.hostname === "127.0.0.1" || parsedBaseUrl.hostname === "::1" || parsedBaseUrl.hostname === "[::1]");
+    if (isLoopback && parsedBaseUrl) {
       try {
-        const resp = await fetch(config.openaiCompatibleBaseURL.replace(/\/v1$/, "/v1/models"));
+        const modelsUrl = new URL(parsedBaseUrl.toString().replace(/\/v1\/?$/, "/v1/models"));
+        const resp = await fetch(modelsUrl, { signal: AbortSignal.timeout(3000) });
         if (!resp.ok) {
           status = "warn";
           detail += " — not reachable";
@@ -150,7 +158,7 @@ export async function runDoctor(): Promise<void> {
 
   // ── Encryption ──
   if (config.dbEncryptionKey) {
-    checks.push({ label: "Encryption", status: "ok", detail: "AES-256-GCM enabled" });
+    checks.push({ label: "Encryption", status: "ok", detail: "AES-256-CBC enabled (libsql)" });
   } else {
     checks.push({ label: "Encryption", status: "warn", detail: "No encryption key set. Data stored in plaintext." });
   }
