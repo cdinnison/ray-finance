@@ -115,7 +115,8 @@ export function isConfigured(): boolean {
 export function saveConfig(partial: Partial<RayConfig>): void {
   const configPath = getConfigPath();
   const dir = resolve(RAY_DIR);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { chmodSync(dir, 0o700); } catch {}
 
   const existing = loadFileConfig();
   const merged = { ...existing, ...partial };

@@ -58,13 +58,15 @@
   <script>
     function showError(msg) {
       const el = document.getElementById('error');
-      el.innerHTML = msg;
-      el.style.display = 'block';
+      if (el) {
+        el.textContent = String(msg || 'An error occurred.');
+        el.style.display = 'block';
+      }
     }
 
     async function resume() {
       let stored;
-      try { stored = JSON.parse(localStorage.getItem('ray_plaid_link') || 'null'); } catch {}
+      try { stored = JSON.parse(sessionStorage.getItem('ray_plaid_link') || 'null'); } catch {}
       if (!stored || !stored.link_token || !stored.session_id) {
         showError('OAuth session not found. Please run "ray link" again.');
         return;
@@ -84,7 +86,18 @@
         token: stored.link_token,
         receivedRedirectUri: window.location.href,
         onSuccess: async (publicToken, metadata) => {
-          document.getElementById('view').innerHTML = '<div class="spinner"></div><h1>Linking</h1><p>Syncing ' + (metadata.institution?.name || 'account') + '...</p>';
+          const view = document.getElementById('view');
+          const spinner = document.createElement('div');
+          spinner.className = 'spinner';
+          const heading = document.createElement('h1');
+          heading.textContent = 'Linking';
+          const status = document.createElement('p');
+          status.textContent = 'Syncing ' + (metadata.institution?.name || 'account') + '...';
+          const errBox = document.createElement('div');
+          errBox.id = 'error';
+          errBox.className = 'error';
+          errBox.style.display = 'none';
+          view.replaceChildren(spinner, heading, status, errBox);
           try {
             const resp = await fetch('/api/exchange', {
               method: 'POST',
@@ -100,15 +113,22 @@
               const data = await resp.json().catch(() => ({}));
               throw new Error(data.error || 'Exchange failed');
             }
-            try { localStorage.removeItem('ray_plaid_link'); } catch {}
+            try { sessionStorage.removeItem('ray_plaid_link'); } catch {}
             const result = await resp.json();
             const name = result.institution_name || metadata.institution?.name || 'Account';
-            document.getElementById('view').innerHTML = '<h1 style="color:#34d399">' + name + ' Connected</h1><p>Syncing transactions. You can close this page.</p>';
+            const doneHeading = document.createElement('h1');
+            doneHeading.style.color = '#34d399';
+            doneHeading.textContent = name + ' Connected';
+            const doneText = document.createElement('p');
+            doneText.textContent = 'Syncing transactions. You can close this page.';
+            view.replaceChildren(doneHeading, doneText);
           } catch (e) {
+            try { sessionStorage.removeItem('ray_plaid_link'); } catch {}
             showError(e.message || 'Failed to link account. Please run "ray link" again.');
           }
         },
         onExit: (err) => {
+          try { sessionStorage.removeItem('ray_plaid_link'); } catch {}
           if (err) showError('Connection cancelled. Please run "ray link" again.');
         },
       });
