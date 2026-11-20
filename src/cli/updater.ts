@@ -1,5 +1,5 @@
-import { execSync } from "child_process";
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { execFileSync } from "child_process";
+import { existsSync, readFileSync, writeFileSync, chmodSync } from "fs";
 import { homedir } from "os";
 import { dirname, resolve } from "path";
 import chalk from "chalk";
@@ -8,6 +8,7 @@ const CACHE_PATH = resolve(homedir(), ".ray", "update-check.json");
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const REGISTRY_URL = "https://registry.npmjs.org/ray-finance/latest";
 const PACKAGE_NAME = "ray-finance";
+const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 interface UpdateCache {
   latestVersion: string;
@@ -33,7 +34,8 @@ function readCache(): UpdateCache | null {
 
 function writeCache(latestVersion: string): void {
   try {
-    writeFileSync(CACHE_PATH, JSON.stringify({ latestVersion, checkedAt: Date.now() }));
+    writeFileSync(CACHE_PATH, JSON.stringify({ latestVersion, checkedAt: Date.now() }), { mode: 0o600 });
+    try { chmodSync(CACHE_PATH, 0o600); } catch {}
   } catch {
     // ~/.ray/ may not exist yet — that's fine
   }
@@ -45,8 +47,9 @@ export async function fetchLatestVersion(): Promise<string | null> {
       signal: AbortSignal.timeout(5000),
       headers: { accept: "application/json" },
     });
+    if (!resp.ok) return null;
     const data = (await resp.json()) as { version?: string };
-    return data.version ?? null;
+    return typeof data.version === "string" && SEMVER_RE.test(data.version) ? data.version : null;
   } catch {
     return null;
   }
@@ -54,6 +57,8 @@ export async function fetchLatestVersion(): Promise<string | null> {
 
 export async function checkForUpdate(currentVersion: string): Promise<void> {
   try {
+    const optOut = (process.env.RAY_NO_UPDATE_CHECK || "").toLowerCase();
+    if (optOut === "1" || optOut === "true") return;
     if (!existsSync(dirname(CACHE_PATH))) return;
 
     let latest: string | null = null;
@@ -94,7 +99,7 @@ export async function runUpdate(currentVersion: string): Promise<void> {
 
   console.log(`Updating to ${latest}...`);
   try {
-    execSync(`npm install -g ${PACKAGE_NAME}@latest`, {
+    execFileSync("npm", ["install", "-g", `${PACKAGE_NAME}@${latest}`], {
       stdio: "inherit",
       cwd: homedir(),
     });

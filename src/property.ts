@@ -4,22 +4,60 @@ import { createHash } from "crypto";
 
 const MANUAL_ITEM_ID = "manual-assets";
 const LISTING_URL_PREFIX = "listing_url:";
+const REDFIN_TIMEOUT_MS = 10_000;
+const REDFIN_MAX_REDIRECTS = 3;
+const REDFIN_MAX_BODY_BYTES = 5 * 1024 * 1024;
 
 function accountId(name: string): string {
   const hash = createHash("sha256").update(name).digest("hex").slice(0, 8);
   return `manual-${hash}`;
 }
 
-/** Scrape the Redfin Estimate from a Redfin listing URL */
-export async function scrapeRedfinEstimate(url: string): Promise<number | null> {
-  const resp = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      "Accept": "text/html",
-    },
-  });
-  if (!resp.ok) return null;
+/** Validate that a property listing URL uses HTTPS and points strictly to redfin.com */
+export function isValidRedfinUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "https:") return false;
+    if (parsed.username || parsed.password) return false;
+    const host = parsed.hostname.toLowerCase();
+    return host === "redfin.com" || host.endsWith(".redfin.com");
+  } catch {
+    return false;
+  }
+}
+
+/** Scrape the Redfin Estimate from a validated Redfin listing URL */
+export async function scrapeRedfinEstimate(url: string, fetchImpl: typeof fetch = fetch): Promise<number | null> {
+  let currentUrl = url;
+  if (!isValidRedfinUrl(currentUrl)) return null;
+
+  let resp: Response | null = null;
+  for (let redirects = 0; redirects <= REDFIN_MAX_REDIRECTS; redirects++) {
+    resp = await fetchImpl(currentUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "text/html",
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(REDFIN_TIMEOUT_MS),
+    });
+
+    if (resp.status >= 300 && resp.status < 400) {
+      const location = resp.headers.get("location");
+      if (!location || redirects === REDFIN_MAX_REDIRECTS) return null;
+      const nextUrl = new URL(location, currentUrl).toString();
+      if (!isValidRedfinUrl(nextUrl)) return null;
+      currentUrl = nextUrl;
+      continue;
+    }
+    break;
+  }
+
+  if (!resp || !resp.ok) return null;
+  const contentLength = Number(resp.headers.get("content-length") || 0);
+  if (contentLength > REDFIN_MAX_BODY_BYTES) return null;
   const html = await resp.text();
+  if (Buffer.byteLength(html, "utf8") > REDFIN_MAX_BODY_BYTES) return null;
 
   // Prefer Redfin Estimate (current market value) over sold/list price
   const match = html.match(/EstimateValueHeader[^>]*>.*?class="price[^"]*">\$([\d,]+)/) ||
@@ -60,6 +98,9 @@ export function addManualAccount(
   ).run(id, MANUAL_ITEM_ID, name, dbType, subtype, balance);
 
   if (listingUrl) {
+    if (!isValidRedfinUrl(listingUrl)) {
+      throw new Error("Only HTTPS redfin.com listing URLs are supported.");
+    }
     db.prepare(
       `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
     ).run(LISTING_URL_PREFIX + id, listingUrl);
