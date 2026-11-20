@@ -77,9 +77,10 @@ export async function handleMessage(
     content: redact(h.content),
   }));
 
-  // Ensure last message is the current user message
-  if (messages.length === 0 || messages[messages.length - 1].content !== userMessage) {
-    messages.push({ role: "user", content: redact(userMessage) });
+  // Ensure last message is the current user message (compare against redacted text to avoid duplicates)
+  const redactedUserMessage = redact(userMessage);
+  if (messages.length === 0 || messages[messages.length - 1].content !== redactedUserMessage) {
+    messages.push({ role: "user", content: redactedUserMessage });
   }
 
   // Extended thinking config — only for providers that support it

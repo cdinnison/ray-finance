@@ -383,12 +383,13 @@ export function getTransactionsFiltered(
     params.push(`%${escapeLikePattern(filters.accountName)}%`);
   }
   if (filters.account) {
-    conditions.push(`t.account_id IN (SELECT account_id FROM accounts WHERE name LIKE ?)`);
-    params.push(`%${filters.account}%`);
+    conditions.push(`t.account_id IN (SELECT account_id FROM accounts WHERE name LIKE ? ESCAPE '\\')`);
+    params.push(`%${escapeLikePattern(filters.account)}%`);
   }
   if (filters.label) {
-    conditions.push(`(t.label LIKE ? OR t.note LIKE ?)`);
-    params.push(`%${filters.label}%`, `%${filters.label}%`);
+    conditions.push(`(t.label LIKE ? ESCAPE '\\' OR t.note LIKE ? ESCAPE '\\')`);
+    const labelPattern = `%${escapeLikePattern(filters.label)}%`;
+    params.push(labelPattern, labelPattern);
   }
   if (filters.excludePending) {
     conditions.push(`t.pending = 0`);

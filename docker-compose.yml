@@ -5,5 +5,5 @@ services:
     volumes:
       - ./data:/app/data
     ports:
-      - "3000:3000"
+      - "127.0.0.1:9876:9876"
     restart: unless-stopped

@@ -294,4 +294,35 @@ describe("syncBridgeInstitution", () => {
       amount: 24.5,
     });
   });
+
+  it("masks Bridge IBAN to last 4 chars and never stores full IBAN in account name", async () => {
+    const institution = seedBridgeInstitution(db);
+    const client = {
+      ensureAccessToken: vi.fn().mockResolvedValue("bridge-access-token"),
+      getItem: vi.fn().mockResolvedValue({
+        id: institution.item_id,
+        provider_id: "provider-1",
+        status_code: 0,
+        updated_at: "2026-04-13T09:00:00.000Z",
+      }),
+      getProvider: vi.fn().mockResolvedValue({ name: "Boursorama" }),
+      listAccounts: vi.fn().mockResolvedValue([
+        {
+          id: 2002,
+          item_id: institution.item_id,
+          iban: "FR76 3000 6000 0112 3456 7890 189",
+          type: "checking",
+          accounting_balance: 100,
+          currency_code: "EUR",
+        },
+      ]),
+      listTransactions: vi.fn().mockResolvedValue([]),
+    };
+
+    await syncBridgeInstitution(db, institution, client as any);
+
+    const account = db.prepare(`SELECT name, mask FROM accounts WHERE account_id = ?`).get("bridge-account:2002") as any;
+    expect(account.name).toBe("Bridge account 2002");
+    expect(account.mask).toBe("0189");
+  });
 });
