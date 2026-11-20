@@ -132,14 +132,18 @@ function upsertBridgeAccounts(
         null;
       const accountId = getBridgeAccountId(account.id);
 
+      const ibanMask = account.iban
+        ? account.iban.replace(/\s+/g, "").slice(-4) || null
+        : null;
+
       upsert.run({
         account_id: accountId,
         item_id: institution.item_id,
-        name: account.name || account.clean_name || account.official_name || account.iban || `Bridge account ${account.id}`,
+        name: account.name || account.clean_name || account.official_name || `Bridge account ${account.id}`,
         official_name: account.official_name || account.clean_name || null,
         type,
         subtype,
-        mask: account.iban || null,
+        mask: ibanMask,
         current_balance: currentBalance,
         available_balance: availableBalance,
         currency: account.currency_code || "EUR",
@@ -496,12 +500,17 @@ export function createBridgeProvider(clientFactory: () => BridgeClient = () => n
         forceReauthentication: !!reconnectInstitution,
       });
 
+      const connectUrl = new URL(connectSession.url);
+      if (connectUrl.protocol !== "https:") {
+        throw new Error(`Refusing to open non-HTTPS Bridge Connect URL: ${connectUrl.protocol}`);
+      }
+
       console.log(`Opening Bridge Connect in your browser...\n`);
-      console.log(`  ${connectSession.url}\n`);
+      console.log(`  ${connectUrl.toString()}\n`);
       console.log(`Return here after you finish the Bridge flow. Ray will detect the completed item automatically.\n`);
       console.log("Press Ctrl+C to cancel waiting.\n");
 
-      await open(connectSession.url);
+      await open(connectUrl.toString());
 
       const spinner = ora(reconnectInstitution ? "Waiting for Bridge item refresh..." : "Waiting for Bridge item creation...").start();
       const items = await pollForBridgeItems(client, accessToken, {

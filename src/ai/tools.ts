@@ -1145,8 +1145,8 @@ export async function executeTool(db: Database.Database, toolName: string, toolI
       const conditions: string[] = ["it.date BETWEEN ? AND ?"];
       const params: any[] = [start, end];
       if (toolInput.ticker) {
-        conditions.push(`s.ticker LIKE ?`);
-        params.push(`%${toolInput.ticker}%`);
+        conditions.push(`s.ticker LIKE ? ESCAPE '\\'`);
+        params.push(`%${String(toolInput.ticker).replace(/[\\%_]/g, c => "\\" + c)}%`);
       }
       const rows = db.prepare(
         `SELECT it.date, it.name, it.quantity, it.amount, it.price, it.type, it.subtype, s.ticker, a.name as account_name
